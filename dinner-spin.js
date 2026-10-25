@@ -1,7 +1,7 @@
 const ComponentFunction = function() {
   // @section:imports @depends:[]
   const React = require('react');
-  const { View, Text: NativeText, ScrollView, TouchableOpacity, TextInput: NativeTextInput, Image, StyleSheet, StatusBar, Platform, Alert, LayoutAnimation, Modal } = require('react-native');
+  const { View, Text: NativeText, ScrollView, TouchableOpacity, TextInput: NativeTextInput, Image, StyleSheet, StatusBar, Platform, Alert, LayoutAnimation, Modal, Animated } = require('react-native');
   const { Ionicons } = require('@react-native-vector-icons/ionicons');
   const { createBottomTabNavigator } = require('@react-navigation/bottom-tabs');
   const { createStackNavigator } = require('@react-navigation/stack');
@@ -36,7 +36,7 @@ const ComponentFunction = function() {
   // @section:ThemeContext @depends:[theme]
   var translations = {
     'Dinner Spin': 'Ужин наугад', 'Recipes': 'Рецепты', 'Pick': 'Выбор',
-    'Add dish': 'Добавить блюдо', 'Add Dish': 'Добавить блюдо', 'Edit Dish': 'Изменить блюдо',
+    'Add dish': 'Добавить блюдо', 'Add Dish': 'Добавить блюдо', 'Edit Dish': 'Редактирование рецепта',
     'Save Changes': 'Сохранить изменения', 'SPIN DISH': 'ВЫБРАТЬ БЛЮДО', 'SPINNING…': 'ВЫБИРАЕМ…',
     'Tonight’s choice starts here': 'Выбор ужина начинается здесь',
     'Add a dish to your menu, then set a budget and spin for dinner.': 'Добавьте блюдо, задайте бюджет и выберите ужин.',
@@ -87,7 +87,8 @@ const ComponentFunction = function() {
     'Step description...': 'Опишите шаг приготовления...',
     'View photo': 'Посмотреть фото', 'Replace photo': 'Заменить фото', 'Remove photo': 'Удалить фото',
     'History': 'История выпавших блюд', 'No history yet': 'История пока пуста',
-    'Filter dishes': 'Фильтр блюд', 'Restaurants / Cafes': 'Рестораны / Кафе'
+    'Filter dishes': 'Фильтр блюд', 'Restaurants / Cafes': 'Рестораны / Кафе',
+    'Recipes & Places': 'Рецепты и заведения', 'Pasta': 'Паста', 'Comfort food': 'Домашняя еда'
   };
   var translateText = function(value, language) {
     if (typeof value !== 'string') return value;
@@ -169,6 +170,12 @@ const ComponentFunction = function() {
     if (name.indexOf('Salmon') >= 0 || name.indexOf('лосося') >= 0) return { kind: 'Fish', minutes: 30 };
     if (name.indexOf('Pasta') >= 0 || name.indexOf('паста') >= 0) return { kind: 'Pasta', minutes: 25 };
     return { kind: 'Comfort food', minutes: 20 };
+  };
+  var placePhotos = function(place) {
+    if (!place) return [];
+    if (Array.isArray(place.photos) && place.photos.length) return place.photos.filter(Boolean);
+    if (place.photo) return [place.photo];
+    return [];
   };
   var getDishImage = function(dish) {
     if (dish?.photo_uri) return dish.photo_uri;
@@ -394,15 +401,13 @@ const ComponentFunction = function() {
       React.createElement(StatusBar, { testID: 'StatusBar-Recipes', backgroundColor: backgroundColor, barStyle: 'light-content' }),
       React.createElement(View, { testID: 'View-21', style: styles.tabScreen, componentId: 'recipes-content' },
         React.createElement(Header, { testID: 'Header-2', id: 'recipes', title: 'Recipes', action: React.createElement(View, { testID: 'View-RecipesActions', style: styles.homeHeaderActions },
-          React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-AddDish', style: styles.iconAction, onPress: function() { props.navigation.navigate('DishEditor'); }, componentId: 'recipes-add' },
-            React.createElement(Ionicons, { testID: 'Ionicons-Add', name: 'add-circle-outline', size: 24, color: accentColor })),
           React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-ManageMenu', style: styles.iconAction, onPress: function() { props.navigation.navigate('MenuManager'); }, componentId: 'recipes-manage' },
             React.createElement(Ionicons, { testID: 'Ionicons-Gear', name: 'settings-outline', size: 24, color: textSecondary }))
         ) }),
         !query.data.length ? React.createElement(View, { testID: 'View-22', style: styles.centerEmpty, componentId: 'recipes-empty' },
           React.createElement(Text, { testID: 'Text-17', style: [styles.title, { fontSize: 22}], componentId: 'recipes-empty-title' }, 'Your saved recipes'),
           React.createElement(Text, { testID: 'Text-18', style: styles.bodyMuted, componentId: 'recipes-empty-copy' }, 'Add a dish to keep its recipe here.'),
-          React.createElement(PrimaryButton, { testID: 'PrimaryButton-AddFirst', id: 'recipes-empty-add', label: 'Add dish', onPress: function() { props.navigation.navigate('DishEditor'); } })) :
+          React.createElement(PrimaryButton, { testID: 'PrimaryButton-AddFirst', id: 'recipes-empty-add', label: 'Add dish', onPress: function() { props.navigation.navigate('MenuManager'); } })) :
           React.createElement(ScrollView, { testID: 'ScrollView-2', style: styles.flexScroll, contentContainerStyle: { paddingTop: 16, paddingBottom: TAB_MENU_HEIGHT + insets.bottom + SCROLL_EXTRA_PADDING }, componentId: 'recipes-list' },
             query.data.map(function(dish, index) {
               return React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-7', key: String(dish?.id || index), style: styles.recipeCard, onPress: function() { props.navigation.navigate('RecipeDetail', { dishId: dish?.id }); }, componentId: 'recipes-item-' + index },
@@ -419,6 +424,8 @@ const ComponentFunction = function() {
   var MenuManagerScreen = function(props) {
     var insets = useSafeAreaInsets();
     var query = useQuery('dishes');
+    var context = useTheme();
+    var camera = useCamera();
     var activeTabState = React.useState('recipes');
     var activeTab = activeTabState[0], setActiveTab = activeTabState[1];
 
@@ -428,16 +435,78 @@ const ComponentFunction = function() {
 
     var placeModalState = React.useState(false);
     var placeModal = placeModalState[0], setPlaceModal = placeModalState[1];
+    var editingPlaceState = React.useState(null);
+    var editingPlace = editingPlaceState[0], setEditingPlace = editingPlaceState[1];
     var pNameState = React.useState('');
     var pAddressState = React.useState('');
     var pDescState = React.useState('');
-    var pPhotoState = React.useState(null);
+    var pPhotosState = React.useState([]);
+    var placePhotosNow = pPhotosState[0] || [];
+
+    var openPlaceEditor = function(index) {
+      if (index === null || index === undefined) {
+        setEditingPlace(null);
+        pNameState[1]('');
+        pAddressState[1]('');
+        pDescState[1]('');
+        pPhotosState[1]([]);
+      } else {
+        var place = places[index] || {};
+        setEditingPlace(index);
+        pNameState[1](place.name || '');
+        pAddressState[1](place.address || '');
+        pDescState[1](place.desc || '');
+        pPhotosState[1](placePhotos(place));
+      }
+      setPlaceModal(true);
+    };
+    var addPlacePhoto = function() {
+      var append = function(uri) {
+        if (!uri) return;
+        pPhotosState[1](function(prev) { return [].concat(prev || [], [uri]); });
+      };
+      Alert.alert('Фото заведения', 'Можно добавить несколько: снаружи, зал, меню.', [
+        { text: 'Сделать фото', onPress: function() { camera.takePhoto().then(function(res) { append(res && res.uri); }).catch(function() {}); } },
+        { text: 'Выбрать из галереи', onPress: function() { camera.pickImage().then(function(res) { append(res && res.uri); }).catch(function() {}); } },
+        { text: 'Отмена', style: 'cancel' }
+      ]);
+    };
+    var savePlace = function() {
+      var next = {
+        name: String(pNameState[0] || '').trim(),
+        address: String(pAddressState[0] || '').trim(),
+        desc: String(pDescState[0] || '').trim(),
+        photos: placePhotosNow.filter(Boolean)
+      };
+      if (!next.name) {
+        Alert.alert('Название', 'Укажите название заведения.');
+        return;
+      }
+      setPlaces(function(prev) {
+        var list = prev || [];
+        if (editingPlace === null || editingPlace === undefined) return list.concat([next]);
+        return list.map(function(place, i) { return i === editingPlace ? next : place; });
+      });
+      setPlaceModal(false);
+    };
+    var deletePlace = function() {
+      if (editingPlace === null || editingPlace === undefined) return;
+      var action = function() {
+        setPlaces(function(prev) { return (prev || []).filter(function(_, i) { return i !== editingPlace; }); });
+        setPlaceModal(false);
+      };
+      if (Platform.OS === 'web') { if (window.confirm('Удалить это заведение?')) action(); }
+      else Alert.alert('Удалить заведение', 'Удалить это заведение из списка?', [
+        { text: 'Отмена', style: 'cancel' },
+        { text: 'Удалить', style: 'destructive', onPress: action }
+      ]);
+    };
 
     return React.createElement(View, { testID: 'View-MenuManager', style: [styles.screen, { paddingTop: insets.top }], componentId: 'menu-manager-screen' },
       React.createElement(StatusBar, { testID: 'StatusBar-MenuMgr', backgroundColor: backgroundColor, barStyle: 'light-content' }),
       React.createElement(View, { testID: 'View-MenuMgrContent', style: styles.tabScreen, componentId: 'menu-manager-content' },
         React.createElement(Header, { testID: 'Header-MenuMgr', id: 'menu-mgr', title: 'Recipes & Places', back: function() { props.navigation.goBack(); } }),
-        
+
         React.createElement(View, { style: styles.topSubTabs },
           React.createElement(TouchableOpacity, { style: [styles.subTabBtn, activeTab === 'recipes' ? styles.subTabBtnActive : null], onPress: function() { setActiveTab('recipes'); } },
             React.createElement(Text, { style: [styles.medium, activeTab === 'recipes' ? { color: onAccentColor } : null] }, 'Рецепты')),
@@ -446,33 +515,41 @@ const ComponentFunction = function() {
         ),
 
         activeTab === 'recipes' ? (
-          !query.data.length ? React.createElement(View, { testID: 'View-MenuEmpty', style: styles.centerEmpty, componentId: 'menu-mgr-empty' },
-            React.createElement(Text, { testID: 'Text-EmptyTitle', style: styles.title }, 'Your dinner menu starts here'),
-            React.createElement(PrimaryButton, { testID: 'PrimaryButton-MenuAdd', id: 'menu-mgr-empty-add', label: 'Add dish', onPress: function() { props.navigation.navigate('DishEditor'); } })) :
-            React.createElement(ScrollView, { testID: 'ScrollView-MenuMgr', style: styles.flexScroll, contentContainerStyle: { paddingTop: 16, paddingBottom: insets.bottom + SCROLL_EXTRA_PADDING }, componentId: 'menu-mgr-list' },
+          React.createElement(View, { style: { flex: 1 } },
+            React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginVertical: 12 }], onPress: function() { props.navigation.navigate('DishEditor'); } },
+              React.createElement(Text, { style: styles.primaryButtonText }, '+ Добавить блюдо')),
+            !query.data.length ? React.createElement(View, { testID: 'View-MenuEmpty', style: styles.centerEmpty, componentId: 'menu-mgr-empty' },
+              React.createElement(Text, { testID: 'Text-EmptyTitle', style: styles.title }, 'Your dinner menu starts here'),
+              React.createElement(Text, { style: styles.bodyMuted }, 'Add a dish to keep its price and recipe close at hand.')) :
+            React.createElement(ScrollView, { testID: 'ScrollView-MenuMgr', style: styles.flexScroll, contentContainerStyle: { paddingBottom: insets.bottom + SCROLL_EXTRA_PADDING }, componentId: 'menu-mgr-list' },
               query.data.map(function(dish, index) {
+                var details = dishDetails(dish);
                 return React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-MenuRow', key: String(dish?.id || index), style: styles.menuRow, onPress: function() { props.navigation.navigate('DishDetail', { dishId: dish?.id }); }, componentId: 'menu-mgr-item-' + index },
                   React.createElement(DishImage, { testID: 'DishImage-MenuMgr', dish: dish, style: styles.menuImage, componentId: 'menu-mgr-image-' + index }),
                   React.createElement(View, { testID: 'View-MenuInfo', style: styles.menuInfo, componentId: 'menu-mgr-info-' + index },
                     React.createElement(Text, { testID: 'Text-MenuName', style: styles.medium }, dish?.dish_name || 'Untitled dish'),
                     React.createElement(Text, { testID: 'Text-MenuPrice', style: styles.medium }, formatPrice(dish?.price_rubles)),
-                    React.createElement(Text, { testID: 'Text-MenuKind', style: styles.smallMuted }, dishDetails(dish).kind + ' · ' + dishDetails(dish).minutes + ' min')));
+                    React.createElement(Text, { testID: 'Text-MenuKind', style: styles.smallMuted }, context.translate(details.kind) + ' · ' + details.minutes + ' ' + context.translate('min'))));
               }))
+          )
         ) : (
           React.createElement(View, { style: { flex: 1 } },
-            React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginVertical: 12 }], onPress: function() { setPlaceModal(true); } },
+            React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginVertical: 12 }], onPress: function() { openPlaceEditor(null); } },
               React.createElement(Text, { style: styles.primaryButtonText }, '+ Добавить заведение')),
             !places.length ? React.createElement(View, { style: styles.centerEmpty },
               React.createElement(Text, { style: styles.title }, 'Нет добавленных кафе или ресторанов')) :
               React.createElement(ScrollView, { style: styles.flexScroll, contentContainerStyle: { paddingBottom: insets.bottom + SCROLL_EXTRA_PADDING } },
                 places.map(function(place, idx) {
-                  return React.createElement(View, { key: idx, style: styles.menuRow },
-                    place.photo ? React.createElement(Image, { source: { uri: place.photo }, style: styles.menuImage, resizeMode: 'cover' }) :
+                  var photos = placePhotos(place);
+                  var photoNote = photos.length > 1 ? photos.length + ' фото' : '';
+                  var placeMeta = [place.desc, photoNote].filter(Boolean).join(' · ');
+                  return React.createElement(TouchableOpacity, { key: idx, style: styles.menuRow, onPress: function() { openPlaceEditor(idx); } },
+                    photos[0] ? React.createElement(Image, { source: { uri: photos[0] }, style: styles.menuImage, resizeMode: 'cover' }) :
                       React.createElement(View, { style: [styles.menuImage, styles.imageFallback] }, React.createElement(Ionicons, { name: 'restaurant-outline', size: 24, color: textSecondary })),
                     React.createElement(View, { style: styles.menuInfo },
                       React.createElement(Text, { style: styles.medium }, place.name),
                       React.createElement(Text, { style: styles.smallMuted }, place.address),
-                      React.createElement(Text, { style: styles.smallMuted }, place.desc)
+                      placeMeta ? React.createElement(Text, { style: styles.smallMuted }, placeMeta) : null
                     )
                   );
                 })
@@ -482,16 +559,33 @@ const ComponentFunction = function() {
 
         React.createElement(Modal, { visible: placeModal, transparent: true, animationType: 'fade', onRequestClose: function() { setPlaceModal(false); } },
           React.createElement(View, { style: styles.modalBackdrop },
-            React.createElement(View, { style: [styles.unitModalContent, { width: '90%', maxWidth: 400 }] },
-              React.createElement(Text, { style: styles.sectionTitle }, 'Новое заведение'),
-              React.createElement(TextInput, { style: [styles.input, { width: '100%', marginBottom: 8 }], placeholder: 'Название кафе / ресторана', value: pNameState[0], onChangeText: pNameState[1] }),
-              React.createElement(TextInput, { style: [styles.input, { width: '100%', marginBottom: 8 }], placeholder: 'Адрес', value: pAddressState[0], onChangeText: pAddressState[1] }),
-              React.createElement(TextInput, { style: [styles.textArea, { width: '100%', marginBottom: 12, minHeight: 80 }], placeholder: 'Прайс, описание...', value: pDescState[0], onChangeText: pDescState[1], multiline: true }),
-              React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginBottom: 8 }], onPress: function() {
-                setPlaces(places.concat([{ name: pNameState[0], address: pAddressState[0], desc: pDescState[0], photo: pPhotoState[0] }]));
-                pNameState[1](''); pAddressState[1](''); pDescState[1](''); pPhotoState[1](null);
-                setPlaceModal(false);
-              } }, React.createElement(Text, { style: styles.primaryButtonText }, 'Сохранить')),
+            React.createElement(View, { style: styles.placeModalCard },
+              React.createElement(Text, { style: styles.sectionTitle }, editingPlace === null || editingPlace === undefined ? 'Новое заведение' : 'Редактирование заведения'),
+              React.createElement(ScrollView, { style: styles.placeModalScroll, contentContainerStyle: { paddingBottom: 8 } },
+                React.createElement(TextInput, { style: [styles.input, { width: '100%', marginBottom: 8 }], placeholder: 'Название кафе / ресторана', value: pNameState[0], onChangeText: pNameState[1] }),
+                React.createElement(TextInput, { style: [styles.input, { width: '100%', marginBottom: 8 }], placeholder: 'Адрес', value: pAddressState[0], onChangeText: pAddressState[1] }),
+                React.createElement(TextInput, { style: [styles.textArea, { width: '100%', marginBottom: 8, minHeight: 80 }], placeholder: 'Прайс, описание...', value: pDescState[0], onChangeText: pDescState[1], multiline: true }),
+                React.createElement(Text, { style: styles.fieldLabel }, 'Фотографии'),
+                React.createElement(Text, { style: styles.smallMuted }, 'Снаружи, зал или меню — добавьте сколько нужно.'),
+                React.createElement(View, { style: styles.placePhotoRow },
+                  placePhotosNow.map(function(uri, photoIndex) {
+                    return React.createElement(View, { key: String(photoIndex), style: styles.placePhotoTile },
+                      React.createElement(Image, { source: { uri: uri }, style: styles.placePhotoImage, resizeMode: 'cover' }),
+                      React.createElement(TouchableOpacity, { style: styles.placePhotoRemove, onPress: function() {
+                        pPhotosState[1](function(prev) { return (prev || []).filter(function(_, i) { return i !== photoIndex; }); });
+                      } },
+                        React.createElement(Ionicons, { name: 'close', size: 14, color: textPrimary }))
+                    );
+                  }),
+                  React.createElement(TouchableOpacity, { style: styles.placePhotoAdd, onPress: addPlacePhoto },
+                    React.createElement(Ionicons, { name: 'camera-outline', size: 22, color: accentColor }),
+                    React.createElement(Text, { style: styles.smallMuted }, 'Добавить'))
+                )
+              ),
+              React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginTop: 12, marginBottom: 8 }], onPress: savePlace },
+                React.createElement(Text, { style: styles.primaryButtonText }, 'Сохранить')),
+              editingPlace === null || editingPlace === undefined ? null : React.createElement(TouchableOpacity, { style: [styles.primaryButton, { backgroundColor: '#E25B52', marginBottom: 8 }], onPress: deletePlace },
+                React.createElement(Text, { style: [styles.primaryButtonText, { color: '#FFF' }] }, 'Удалить заведение')),
               React.createElement(TouchableOpacity, { style: [styles.primaryButton, { backgroundColor: surfaceAltColor, borderWidth: 1, borderColor: borderColor }], onPress: function() { setPlaceModal(false); } },
                 React.createElement(Text, { style: [styles.primaryButtonText, { color: textPrimary }] }, 'Отмена'))
             )
@@ -544,28 +638,36 @@ const ComponentFunction = function() {
     var params = props.route?.params || {};
     var dish = query.data.find(function(row) { return row?.id === params.dishId; }) || null;
     var goRecipe = function() { if (dish) props.navigation.navigate('RecipeDetail', { dishId: dish.id }); };
-    
-    var pulseState = React.useState(1);
-    var scale = pulseState[0], setScale = pulseState[1];
+    var revealRef = React.useRef(null);
+    if (!revealRef.current) revealRef.current = new Animated.Value(0);
+    var reveal = revealRef.current;
     React.useEffect(function() {
-      var timer = setInterval(function() {
-        setScale(function(prev) { return prev === 1 ? 1.15 : 1; });
-      }, 700);
-      return function() { clearInterval(timer); };
-    }, []);
+      reveal.setValue(0);
+      var drop = Animated.spring(reveal, { toValue: 1, friction: 7, tension: 58, useNativeDriver: Platform.OS !== 'web' });
+      drop.start();
+      return function() { drop.stop(); };
+    }, [params.dishId]);
+    var revealStyle = {
+      width: '100%',
+      alignItems: 'center',
+      opacity: reveal.interpolate({ inputRange: [0, 1], outputRange: [0, 1] }),
+      transform: [
+        { translateY: reveal.interpolate({ inputRange: [0, 1], outputRange: [48, 0] }) },
+        { scale: reveal.interpolate({ inputRange: [0, 1], outputRange: [0.86, 1] }) }
+      ]
+    };
 
     return React.createElement(View, { testID: 'View-28', style: [styles.screen, { paddingTop: insets.top, paddingBottom: insets.bottom + 16 }], componentId: 'result-screen' },
       React.createElement(StatusBar, { testID: 'StatusBar-Result', backgroundColor: backgroundColor, barStyle: 'light-content' }),
       React.createElement(View, { testID: 'View-29', style: styles.stackContent, componentId: 'result-content-wrap' },
         React.createElement(Header, { testID: 'Header-4', id: 'result', title: 'Congratulations!', back: function() { props.navigation.goBack(); } }),
         dish ? React.createElement(View, { testID: 'View-30', style: styles.resultCenter, componentId: 'result-content' },
-          React.createElement(View, { style: { alignItems: 'center', justifyContent: 'center', marginBottom: 10, transform: [{ scale: scale }] } },
-            React.createElement(Ionicons, { name: 'gift', size: 60, color: accentColor })
-          ),
-          React.createElement(Text, { testID: 'Text-28', style: styles.celebration, componentId: 'result-overline' }, 'Tonight’s pick'),
-          React.createElement(DishImage, { testID: 'DishImage-4', dish: dish, style: styles.resultImage, componentId: 'result-image' }),
-          React.createElement(Text, { testID: 'Text-29', style: styles.title, componentId: 'result-name' }, dish.dish_name || 'Dinner'),
-          React.createElement(Text, { testID: 'Test-30', style: styles.bodyMuted, componentId: 'result-price' }, formatPrice(dish.price_rubles) + ' ' + context.translate('estimated total')),
+          React.createElement(Animated.View, { style: revealStyle },
+            React.createElement(View, { style: styles.resultReveal },
+              React.createElement(Text, { testID: 'Text-28', style: styles.celebration, componentId: 'result-overline' }, 'Tonight’s pick'),
+              React.createElement(DishImage, { testID: 'DishImage-4', dish: dish, style: styles.resultImage, componentId: 'result-image' }),
+              React.createElement(Text, { testID: 'Text-29', style: styles.title, componentId: 'result-name' }, dish.dish_name || 'Dinner'),
+              React.createElement(Text, { testID: 'Test-30', style: styles.bodyMuted, componentId: 'result-price' }, formatPrice(dish.price_rubles) + ' ' + context.translate('estimated total')))),
           React.createElement(PrimaryButton, { testID: 'PrimaryButton-4', id: 'result-view-recipe', label: 'View Recipe', onPress: goRecipe }),
           React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-10', style: styles.againButton, onPress: function() { props.navigation.goBack(); }, componentId: 'result-again' },
             React.createElement(Text, { testID: 'Text-31', style: styles.bodyMuted, componentId: 'result-again-label' }, 'No, I want something else'))) :
@@ -708,7 +810,7 @@ const ComponentFunction = function() {
       if (!name.trim() || !price || !serializedIngredients || !serializedSteps) { setError('Please fill in the dish name, price, ingredients and recipe.'); return; }
       setError('');
       insert.mutate({ dish_name: name.trim(), price_rubles: Number(price), ingredients: serializedIngredients, recipe_steps: serializedSteps, photo_uri: photoUri, tags: selectedTags }).then(function() {
-        props.navigation.reset({ index: 0, routes: [{ name: 'Main' }] });
+        props.navigation.goBack();
       }, function() { setError('Couldn’t save this dish. Your details are still here—try saving again.'); });
     };
 
@@ -941,7 +1043,7 @@ const ComponentFunction = function() {
     };
 
     var chooseStepPhoto = function(index) {
-      var currentStepPhoto = steps[index]?.photo || getDishImage(dish);
+      var currentStepPhoto = steps[index] && steps[index].photo;
       if (currentStepPhoto) {
         setStepPhotoModal({ visible: true, itemIndex: index, photoUri: currentStepPhoto });
         return;
@@ -969,11 +1071,11 @@ const ComponentFunction = function() {
       var serializedIngredients = serializeStructuredIngredients(ingredients);
       var serializedSteps = serializeStructuredSteps(steps);
       update.mutate({ id: dishId, data: { dish_name: name.trim(), price_rubles: Number(price), ingredients: serializedIngredients, recipe_steps: serializedSteps, photo_uri: photoUri, tags: selectedTags } }).then(function() {
-        props.navigation.reset({ index: 0, routes: [{ name: 'Main' }] });
+        props.navigation.goBack();
       }, function() { setError('Changes couldn’t be saved. Your dish details are still here.'); });
     };
     var confirmDelete = function() {
-      var action = function() { remove.mutate({ id: dishId }).then(function() { props.navigation.reset({ index: 0, routes: [{ name: 'Main' }] }); }, function() { setError('Couldn’t delete this dish. Please try again.'); }); };
+      var action = function() { remove.mutate({ id: dishId }).then(function() { props.navigation.goBack(); }, function() { setError('Couldn’t delete this dish. Please try again.'); }); };
       if (Platform.OS === 'web') { if (window.confirm(context.translate('Delete this dish from your menu?'))) action(); }
       else Alert.alert(context.translate('Delete dish'), context.translate('Delete this dish from your menu?'), [
         { text: context.translate('Cancel'), style: 'cancel' }, { text: context.translate('Delete'), style: 'destructive', onPress: action }
@@ -1020,7 +1122,7 @@ const ComponentFunction = function() {
 
           React.createElement(Text, { testID: 'Text-53', style: styles.fieldLabel, componentId: 'dish-detail-recipe-label' }, 'Recipe steps'),
           steps.map(function(stepObj, index) {
-            var hasPhoto = Boolean(stepObj.photo || getDishImage(dish));
+            var hasPhoto = Boolean(stepObj.photo);
             return React.createElement(View, { key: index, style: styles.stepBuilderRow },
               React.createElement(TextInput, { style: [styles.input, styles.stepInputText], value: stepObj.text, placeholder: 'Step description...', multiline: true, onChangeText: function(val) {
                 setSteps(function(prev) { var copy = [].concat(prev); copy[index] = Object.assign({}, copy[index], { text: val }); return copy; });
@@ -1238,6 +1340,14 @@ const ComponentFunction = function() {
     recipeListImage: { width: 96, height: 108, borderTopLeftRadius: radiusMd, borderBottomLeftRadius: radiusMd, backgroundColor: surfaceAltColor },
     recipeListCopy: { flex: 1, minWidth: 0, paddingHorizontal: 14, paddingVertical: 12, justifyContent: 'center', gap: 5 },
     resultCenter: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14, padding: 8 },
+    resultReveal: { width: '100%', alignItems: 'center', gap: 14 },
+    placeModalCard: { width: '92%', maxWidth: 420, maxHeight: '88%', backgroundColor: cardColor, borderRadius: radiusMd, padding: 18, borderWidth: 1, borderColor: borderColor },
+    placeModalScroll: { width: '100%', maxHeight: 380 },
+    placePhotoRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10, marginBottom: 4 },
+    placePhotoTile: { width: 76, height: 76, borderRadius: radiusSm, overflow: 'hidden', backgroundColor: surfaceAltColor },
+    placePhotoImage: { width: 76, height: 76 },
+    placePhotoRemove: { position: 'absolute', top: 4, right: 4, width: 22, height: 22, borderRadius: 11, backgroundColor: 'rgba(12,11,10,0.75)', alignItems: 'center', justifyContent: 'center' },
+    placePhotoAdd: { width: 76, height: 76, borderRadius: radiusSm, borderWidth: 1, borderColor: borderColor, backgroundColor: surfaceAltColor, alignItems: 'center', justifyContent: 'center', gap: 2 },
     resultImage: { width: '100%', height: 200, borderRadius: radiusMd, backgroundColor: surfaceAltColor },
     againButton: { minHeight: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
     recipeDetailColumn: { gap: 14, width: '100%' },
