@@ -62,6 +62,9 @@ const ComponentFunction = function() {
     'Congratulations!': 'Поздравляем!', 'Tonight’s pick': 'Выбор на сегодня', 'Dinner': 'Ужин',
     'No, I want something else': 'Нет, хочу что-нибудь другое',
     'No dishes fit your budget': 'В бюджет не подходит ни одно блюдо',
+    'Nothing matches this choice': 'Под этот выбор ничего не попало. Поменяйте фильтр или бюджет.',
+    'No matches yet': 'Под фильтр ничего не попало',
+    'Back to the choice': 'Вернуться к выбору',
     'Raise your dinner budget to include more dishes.': 'Увеличьте бюджет, чтобы добавить больше блюд.',
     'Raise dinner budget': 'Увеличить бюджет', 'Recipe': 'Рецепт', 'Ingredients': 'Ингредиенты',
     'Method': 'Приготовление', 'No ingredients added yet.': 'Ингредиенты пока не добавлены.',
@@ -140,9 +143,9 @@ const ComponentFunction = function() {
   // @section:sample-data @depends:[]
   var SAMPLE_ROWS = {
     dishes: [
-      { dish_name: 'Salmon Steak with Vegetables', price_rubles: 1800, ingredients: 'Salmon steak | 2 | pcs\nBroccoli florets | 300 | g\nLemon | 1 | pcs\nOlive oil | 1 | tbsp', recipe_steps: 'Heat the oven to 200°C. Cut the broccoli into florets and toss with olive oil, salt and pepper.', photo_uri: 'IMAGE:salmon-steak-roasted-vegetables', tags: ['Fish', 'Restaurant'] },
-      { dish_name: 'Pasta Carbonara', price_rubles: 550, ingredients: 'Spaghetti | 250 | g\nBacon | 150 | g\nCream | 100 | ml\nParmesan | 60 | g', recipe_steps: 'Cook spaghetti in salted water until al dente.', photo_uri: 'IMAGE:pasta-carbonara', tags: ['Cafe'] },
-      { dish_name: 'Siberian Pelmeni', price_rubles: 350, ingredients: 'Pelmeni | 400 | g\nSour cream | 3 | tbsp\nButter | 1 | tbsp', recipe_steps: 'Bring a large pot of salted water to a boil.', photo_uri: 'IMAGE:siberian-pelmeni', tags: ['Home'] }
+      { dish_name: 'Salmon Steak with Vegetables', price_rubles: 1800, ingredients: 'Salmon steak | 2 | pcs\nBroccoli florets | 300 | g\nLemon | 1 | pcs\nOlive oil | 1 | tbsp', recipe_steps: 'Heat the oven to 200°C. Cut the broccoli into florets and toss with olive oil, salt and pepper.', photo_uri: 'IMAGE:salmon-steak-roasted-vegetables', tags: ['Fish'] },
+      { dish_name: 'Pasta Carbonara', price_rubles: 550, ingredients: 'Spaghetti | 250 | g\nBacon | 150 | g\nCream | 100 | ml\nParmesan | 60 | g', recipe_steps: 'Cook spaghetti in salted water until al dente.', photo_uri: 'IMAGE:pasta-carbonara', tags: [] },
+      { dish_name: 'Siberian Pelmeni', price_rubles: 350, ingredients: 'Pelmeni | 400 | g\nSour cream | 3 | tbsp\nButter | 1 | tbsp', recipe_steps: 'Bring a large pot of salted water to a boil.', photo_uri: 'IMAGE:siberian-pelmeni', tags: [] }
     ]
   };
   var DEFAULT_BUDGET = { amount: 2000 };
@@ -253,6 +256,20 @@ const ComponentFunction = function() {
 
   var FOOD_TAGS = ['Fish', 'Chicken', 'Beef', 'Veal'];
   var PLACE_TAGS = ['Restaurant', 'Cafe'];
+  var onlyFoodTags = function(tags) {
+    return (tags || []).filter(function(tag) { return FOOD_TAGS.indexOf(tag) >= 0; });
+  };
+  var placeCategoryOf = function(place) {
+    var category = place && place.category;
+    return category === 'Restaurant' || category === 'Cafe' ? category : '';
+  };
+  var ruNoun = function(n, one, few, many) {
+    var n10 = n % 10;
+    var n100 = n % 100;
+    if (n10 === 1 && n100 !== 11) return one;
+    if (n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14)) return few;
+    return many;
+  };
   var SEARCH_PAIRS = [
     ['salmon', 'лосос'], ['steak', 'стейк'], ['vegetable', 'овощ'], ['pasta', 'паста'],
     ['carbonara', 'карбонар'], ['siberian', 'сибирск'], ['pelmeni', 'пельмен'],
@@ -537,8 +554,7 @@ const ComponentFunction = function() {
       });
     };
     return React.createElement(View, null,
-      React.createElement(TagGroup, { label: 'Категории', hint: 'Ресторан или кафе', tags: PLACE_TAGS, selected: selected, onToggle: toggle }),
-      React.createElement(TagGroup, { label: 'Теги', hint: 'Рыба, мясо и другое', tags: FOOD_TAGS, selected: selected, onToggle: toggle }));
+      React.createElement(TagGroup, { label: 'Теги', hint: 'Рыба, мясо и другое', tags: FOOD_TAGS, selected: onlyFoodTags(selected), onToggle: toggle }));
   };
   // @section:HomeScreen @depends:[ThemeContext,shared-components,styles]
   var HomeScreen = function(props) {
@@ -549,6 +565,8 @@ const ComponentFunction = function() {
     var setBudget = budgetStore[1];
     var context = useTheme();
 
+    var placesStore = useStorage('dinner-places', []);
+    var places = placesStore[0] || [];
     var filterStore = useStorage('dinner-filter-states', {});
     var filterStates = filterStore[0] || {};
 
@@ -560,30 +578,45 @@ const ComponentFunction = function() {
     var spinningState = React.useState(false);
     var spinning = spinningState[0], setSpinning = spinningState[1];
     var spinRef = React.useRef(null);
-    var rows = query.data;
+    var rows = query.data || [];
     var budgetMax = 5000;
-    (rows || []).forEach(function(dish) {
+    rows.forEach(function(dish) {
       var price = Number(dish && dish.price_rubles);
       if (price > budgetMax) budgetMax = Math.ceil(price / 1000) * 1000;
     });
     var budgetStep = Math.max(50, Math.round(budgetMax / 100));
-
-    var eligible = rows.filter(function(dish) {
-      var priceOk = Number(dish?.price_rubles || 0) <= budget;
-      if (!priceOk) return false;
-      var dishTags = dish?.tags || [];
-      for (var tag in filterStates) {
-        var state = filterStates[tag];
-        if (state === 'include') {
-          if (!dishTags.includes(tag)) return false;
-        } else if (state === 'exclude') {
-          if (dishTags.includes(tag)) return false;
-        }
+    var includedPlaces = PLACE_TAGS.filter(function(tag) { return filterStates[tag] === 'include'; });
+    var placeOnly = includedPlaces.length > 0;
+    var placeExcluded = PLACE_TAGS.some(function(tag) { return filterStates[tag] === 'exclude'; });
+    var dishOk = function(dish) {
+      if (placeOnly) return false;
+      if (Number(dish?.price_rubles || 0) > budget) return false;
+      var dishTags = onlyFoodTags(dish?.tags);
+      for (var i = 0; i < FOOD_TAGS.length; i += 1) {
+        var tag = FOOD_TAGS[i];
+        if (filterStates[tag] === 'include' && dishTags.indexOf(tag) < 0) return false;
+        if (filterStates[tag] === 'exclude' && dishTags.indexOf(tag) >= 0) return false;
       }
       return true;
+    };
+    var placeOk = function(place) {
+      var category = placeCategoryOf(place);
+      if (placeOnly) return includedPlaces.indexOf(category) >= 0;
+      if (!category) return !placeExcluded;
+      return filterStates[category] !== 'exclude';
+    };
+    var options = [];
+    rows.forEach(function(dish) {
+      if (dishOk(dish)) options.push({ kind: 'dish', key: 'dish:' + String(dish?.id), dish: dish });
     });
-
-    var current = rows.find(function(dish) { return dish?.id === picked; }) || eligible[0] || rows[0] || null;
+    places.forEach(function(place, index) {
+      if (placeOk(place)) options.push({ kind: 'place', key: 'place:' + index + ':' + String(place && place.name || ''), place: place, index: index });
+    });
+    var current = null;
+    for (var optionIndex = 0; optionIndex < options.length; optionIndex += 1) {
+      if (options[optionIndex].key === picked) { current = options[optionIndex]; break; }
+    }
+    if (!current) current = options[0] || null;
     
     var historyStore = useStorage('dinner-history', []);
     var history = historyStore[0] || [];
@@ -594,37 +627,56 @@ const ComponentFunction = function() {
       if (budget > budgetMax) setBudget({ amount: budgetMax });
     }, [budget, budgetMax]);
     
-    var countText = context.language === 'RU' ? 'Подходит по бюджету: ' + eligible.length + ' ' +
-      (eligible.length % 10 === 1 && eligible.length % 100 !== 11 ? 'блюдо' :
-        eligible.length % 10 >= 2 && eligible.length % 10 <= 4 && (eligible.length % 100 < 12 || eligible.length % 100 > 14) ? 'блюда' : 'блюд') :
-      'Matching dishes: ' + eligible.length;
+    var dishCount = options.filter(function(item) { return item.kind === 'dish'; }).length;
+    var placeCount = options.length - dishCount;
+    var countText = context.language === 'RU'
+      ? (placeOnly ? 'В выборе только заведения: ' + placeCount :
+        placeCount ? 'В выборе: ' + dishCount + ' ' + ruNoun(dishCount, 'домашнее блюдо', 'домашних блюда', 'домашних блюд') + ' и ' + placeCount + ' ' + ruNoun(placeCount, 'заведение', 'заведения', 'заведений') :
+        'Подходит по бюджету: ' + dishCount + ' ' + ruNoun(dishCount, 'блюдо', 'блюда', 'блюд'))
+      : (placeOnly ? 'Places only: ' + placeCount :
+        placeCount ? 'In the mix: ' + dishCount + ' home and ' + placeCount + ' places' :
+        'Matching dishes: ' + dishCount);
 
     var spin = function() {
       if (spinning) return;
-      if (!eligible.length) { props.navigation.navigate('SpinResult', { dishId: null, budget: budget }); return; }
+      if (!options.length) { props.navigation.navigate('SpinResult', { dishId: null, place: null, budget: budget }); return; }
       setSpinning(true);
       var ticks = 0;
       spinRef.current = setInterval(function() {
-        var nextIndex = Math.floor(Math.random() * eligible.length);
-        setPicked(eligible[nextIndex]?.id || null);
+        var nextIndex = Math.floor(Math.random() * options.length);
+        setPicked(options[nextIndex].key);
         ticks += 1;
         if (ticks >= 18) {
           clearInterval(spinRef.current);
           spinRef.current = null;
-          var choice = eligible[Math.floor(Math.random() * eligible.length)];
-          setPicked(choice?.id || null);
+          var choice = options[Math.floor(Math.random() * options.length)];
+          setPicked(choice.key);
           setSpinning(false);
-          
-          var newRecord = {
-            id: choice.id || String(Date.now()),
-            dish_name: choice.dish_name,
-            price_rubles: choice.price_rubles,
-            photo_uri: getDishImage(choice),
+          var placeSnapshot = choice.kind === 'place' ? {
+            name: choice.place.name,
+            address: choice.place.address || '',
+            desc: choice.place.desc || '',
+            photos: placePhotos(choice.place),
+            category: placeCategoryOf(choice.place)
+          } : null;
+          var newRecord = placeSnapshot ? {
+            id: 'place-' + Date.now(),
+            kind: 'place',
+            dish_name: placeSnapshot.name,
+            price_rubles: 0,
+            photo_uri: placeSnapshot.photos[0] || '',
+            dateStr: new Date().toLocaleString(),
+            place: placeSnapshot
+          } : {
+            id: choice.dish.id || String(Date.now()),
+            kind: 'dish',
+            dish_name: choice.dish.dish_name,
+            price_rubles: choice.dish.price_rubles,
+            photo_uri: getDishImage(choice.dish),
             dateStr: new Date().toLocaleString()
           };
           setHistory([newRecord].concat(history.slice(0, 19)));
-
-          props.navigation.navigate('SpinResult', { dishId: choice?.id || null, budget: budget });
+          props.navigation.navigate('SpinResult', { dishId: choice.kind === 'dish' ? (choice.dish.id || null) : null, place: placeSnapshot, budget: budget });
         }
       }, 95);
     };
@@ -662,18 +714,28 @@ const ComponentFunction = function() {
           React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-History', style: styles.iconAction, onPress: function() { props.navigation.navigate('History'); }, componentId: 'home-history' },
             React.createElement(Ionicons, { testID: 'Ionicons-History', name: 'time-outline', size: 24, color: textSecondary })) ) }),
         
-        !rows.length ? React.createElement(View, { testID: 'View-13', style: styles.emptyCard, componentId: 'home-empty' },
+        !rows.length && !places.length ? React.createElement(View, { testID: 'View-13', style: styles.emptyCard, componentId: 'home-empty' },
           React.createElement(Text, { testID: 'Text-9', style: styles.title, componentId: 'home-empty-title' }, 'Tonight’s choice starts here'),
           React.createElement(Text, { testID: 'Text-10', style: styles.bodyMuted, componentId: 'home-empty-copy' }, 'Add a dish to your recipes, then spin for dinner.'),
           React.createElement(PrimaryButton, { testID: 'PrimaryButton-1', id: 'home-open-recipes', label: 'Open Recipes', onPress: function() { props.navigation.navigate('Recipes'); } })) :
           React.createElement(View, { testID: 'View-14', style: { flex: 1, justifyContent: 'space-between' }, componentId: 'home-picker-content' },
-            React.createElement(View, { testID: 'View-15', style: styles.dinnerCard, componentId: 'home-dinner-card' },
-              React.createElement(DishImage, { testID: 'DishImage-1', dish: current, style: styles.heroImage, componentId: 'home-dish-image' }),
+            !current ? React.createElement(View, { testID: 'View-15', style: [styles.dinnerCard, { alignItems: 'center', justifyContent: 'center', padding: 24 }], componentId: 'home-dinner-card' },
+              React.createElement(Text, { style: styles.title, componentId: 'home-dish-name' }, 'No matches yet')) :
+            current.kind === 'place' ? React.createElement(View, { testID: 'View-15', style: styles.dinnerCard, componentId: 'home-dinner-card' },
+              placePhotos(current.place)[0] ? React.createElement(Image, { source: { uri: placePhotos(current.place)[0] }, style: styles.heroImage, resizeMode: 'cover' }) :
+                React.createElement(View, { style: [styles.heroImage, styles.imageFallback] }, React.createElement(Ionicons, { name: 'restaurant-outline', size: 36, color: textSecondary })),
               React.createElement(View, { testID: 'View-16', style: styles.dinnerCopy, componentId: 'home-dish-copy' },
                 React.createElement(Text, { testID: 'Text-11', style: styles.overline, componentId: 'home-overline' }, 'TONIGHT’С PICK'),
-                React.createElement(Text, { testID: 'Text-12', style: styles.title, numberOfLines: 1, componentId: 'home-dish-name' }, current?.dish_name || 'Choose a dish'),
+                React.createElement(Text, { testID: 'Text-12', style: styles.title, numberOfLines: 1, componentId: 'home-dish-name' }, current.place.name),
+                React.createElement(Text, { testID: 'Text-13', style: styles.bodyMuted, numberOfLines: 2, componentId: 'home-dish-meta' },
+                  (placeCategoryOf(current.place) ? context.translate(placeCategoryOf(current.place)) : 'Заведение') + (current.place.address ? ' · ' + current.place.address : '')))) :
+            React.createElement(View, { testID: 'View-15', style: styles.dinnerCard, componentId: 'home-dinner-card' },
+              React.createElement(DishImage, { testID: 'DishImage-1', dish: current.dish, style: styles.heroImage, componentId: 'home-dish-image' }),
+              React.createElement(View, { testID: 'View-16', style: styles.dinnerCopy, componentId: 'home-dish-copy' },
+                React.createElement(Text, { testID: 'Text-11', style: styles.overline, componentId: 'home-overline' }, 'TONIGHT’С PICK'),
+                React.createElement(Text, { testID: 'Text-12', style: styles.title, numberOfLines: 1, componentId: 'home-dish-name' }, current.dish?.dish_name || 'Choose a dish'),
                 React.createElement(Text, { testID: 'Text-13', style: styles.bodyMuted, componentId: 'home-dish-meta' },
-                  formatPrice(current?.price_rubles) + ' ' + context.translate('estimated') + ' · ' + dishDetails(current).minutes + ' ' + context.translate('min')))),
+                  formatPrice(current.dish?.price_rubles) + ' ' + context.translate('estimated') + ' · ' + dishDetails(current.dish).minutes + ' ' + context.translate('min')))),
             
             // Горизонтальный слайдер бюджета
             React.createElement(View, { testID: 'View-17', style: styles.budgetCard, componentId: 'home-budget-card' },
@@ -686,7 +748,7 @@ const ComponentFunction = function() {
                 componentId: 'home-budget-slider' }),
               React.createElement(Text, { testID: 'Text-16', style: styles.smallMuted, componentId: 'home-fit-count' }, countText)),
 
-            rows.length ? React.createElement(View, { testID: 'View-19', style: styles.pinnedAction, componentId: 'home-pinned-action' },
+            (rows.length || places.length) ? React.createElement(View, { testID: 'View-19', style: styles.pinnedAction, componentId: 'home-pinned-action' },
               React.createElement(PrimaryButton, { testID: 'PrimaryButton-2', id: 'home-spin', icon: 'dice-outline', label: spinning ? 'SPINNING…' : 'SPIN DISH', onPress: spin, disabled: spinning })) : null
           )),
 
@@ -697,8 +759,8 @@ const ComponentFunction = function() {
             React.createElement(View, { style: styles.sheetHandle }),
             React.createElement(Text, { style: styles.sectionTitle }, 'Фильтр'),
             React.createElement(Text, { style: styles.smallMuted }, 'Один раз — оставить в выборе. Второй — убрать. Третий — сбросить.'),
-            renderFilterGroup('Где', 'Ресторан или кафе', PLACE_TAGS),
-            renderFilterGroup('Блюдо', 'Рыба, мясо и другое', FOOD_TAGS),
+            renderFilterGroup('Где', 'Отметить — только поход, без домашних рецептов. Вычеркнуть — убрать из выбора.', PLACE_TAGS),
+            renderFilterGroup('Блюдо', 'Только для домашних рецептов.', FOOD_TAGS),
             React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginTop: 22, backgroundColor: surfaceAltColor, borderWidth: 1, borderColor: borderColor }], onPress: function() { filterStore[1]({}); } },
               React.createElement(Text, { style: [styles.primaryButtonText, { color: textPrimary }] }, 'Сбросить')),
             React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginTop: 8 }], onPress: function() { setFilterModal(false); } },
@@ -847,6 +909,7 @@ const ComponentFunction = function() {
                   if (!matchesQuery(search, place && place.name)) return null;
                   var photos = placePhotos(place);
                   var photoNote = photos.length > 1 ? photos.length + ' фото' : '';
+                  var categoryLabel = place.category === 'Restaurant' || place.category === 'Cafe' ? place.category : 'Выберите категорию';
                   var placeMeta = [place.desc, photoNote].filter(Boolean).join(' · ');
                   return React.createElement(SwipeRow, { key: 'place-' + idx, rowId: 'place-' + idx, activeId: activeSwipe, setActiveId: setActiveSwipe, setListScroll: setListScroll, onDelete: function() { removePlaceAt(idx); } },
                     React.createElement(TouchableOpacity, { style: [styles.menuRow, { marginBottom: 0 }], onPress: function() { openPlaceEditor(idx); } },
@@ -854,7 +917,8 @@ const ComponentFunction = function() {
                         React.createElement(View, { style: [styles.menuImage, styles.imageFallback] }, React.createElement(Ionicons, { name: 'restaurant-outline', size: 24, color: textSecondary })),
                       React.createElement(View, { style: styles.menuInfo },
                         React.createElement(Text, { style: styles.medium }, place.name),
-                        React.createElement(Text, { style: styles.smallMuted }, place.address),
+                        React.createElement(Text, { style: styles.smallMuted }, categoryLabel),
+                        place.address ? React.createElement(Text, { style: styles.smallMuted }, place.address) : null,
                         placeMeta ? React.createElement(Text, { style: styles.smallMuted }, placeMeta) : null
                       )
                     ));
@@ -878,6 +942,7 @@ const ComponentFunction = function() {
     var nameState = React.useState(existing.name || '');
     var addressState = React.useState(existing.address || '');
     var descState = React.useState(existing.desc || '');
+    var categoryState = React.useState(placeCategoryOf(existing));
     var photosState = React.useState(placePhotos(existing));
     var photos = photosState[0] || [];
     var hydrated = React.useRef(!isNew && !!(existing && existing.name));
@@ -889,6 +954,7 @@ const ComponentFunction = function() {
       nameState[1](place.name || '');
       addressState[1](place.address || '');
       descState[1](place.desc || '');
+      categoryState[1](placeCategoryOf(place));
       photosState[1](placePhotos(place));
     }, [placesStore[0], placeIndex]);
     var appendPlacePhoto = function(uri) {
@@ -921,10 +987,15 @@ const ComponentFunction = function() {
         name: String(nameState[0] || '').trim(),
         address: String(addressState[0] || '').trim(),
         desc: String(descState[0] || '').trim(),
+        category: placeCategoryOf({ category: categoryState[0] }),
         photos: (photosState[0] || []).filter(Boolean)
       };
       if (!next.name) {
         Alert.alert('Название', 'Укажите название заведения.');
+        return;
+      }
+      if (!next.category) {
+        Alert.alert('Категория', 'Выберите ресторан или кафе.');
         return;
       }
       setPlaces(function(prev) {
@@ -956,6 +1027,14 @@ const ComponentFunction = function() {
         React.createElement(TextInput, { style: styles.input, value: addressState[0], onChangeText: addressState[1], placeholder: 'Адрес' }),
         React.createElement(Text, { style: styles.fieldLabel }, 'Прайс, описание'),
         React.createElement(TextInput, { style: [styles.textArea, { minHeight: 96 }], value: descState[0], onChangeText: descState[1], placeholder: 'Прайс, описание...', multiline: true }),
+        React.createElement(Text, { style: styles.fieldLabel }, 'Категория'),
+        React.createElement(Text, { style: styles.smallMuted }, 'Ресторан или кафе'),
+        React.createElement(View, { style: styles.tagWrap },
+          PLACE_TAGS.map(function(tag) {
+            var active = categoryState[0] === tag;
+            return React.createElement(TouchableOpacity, { key: tag, style: [styles.tagChip, active ? styles.tagChipActive : null], onPress: function() { categoryState[1](tag); } },
+              React.createElement(Text, { style: [styles.tagChipText, active ? styles.tagChipTextActive : null] }, tag));
+          })),
         React.createElement(Text, { style: styles.fieldLabel }, 'Фотографии'),
         React.createElement(Text, { style: styles.smallMuted }, 'До 10 фото. Отметьте несколько и подтвердите. Отмена ничего не добавит.'),
         React.createElement(View, { style: styles.placePhotoRow },
@@ -997,7 +1076,11 @@ const ComponentFunction = function() {
           React.createElement(ScrollView, { testID: 'ScrollView-History', style: styles.flexScroll, contentContainerStyle: { paddingTop: 16, paddingBottom: insets.bottom + SCROLL_EXTRA_PADDING }, componentId: 'history-list' },
             history.map(function(item, index) {
               return React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-HistoryRow', key: String(item.id + index), style: styles.historyRow, onPress: function() {
-                var found = query.data.find(function(d) { return d.dish_name === item.dish_name; });
+                if (item.kind === 'place' && item.place) {
+                  props.navigation.navigate('SpinResult', { place: item.place });
+                  return;
+                }
+                var found = (query.data || []).find(function(d) { return d.dish_name === item.dish_name; });
                 if (found) {
                   props.navigation.navigate('RecipeDetail', { dishId: found.id });
                 } else {
@@ -1009,7 +1092,9 @@ const ComponentFunction = function() {
                     React.createElement(Ionicons, { name: 'restaurant-outline', size: 20, color: textSecondary })),
                 React.createElement(View, { style: { flex: 1, gap: 4 } },
                   React.createElement(Text, { style: styles.medium }, item.dish_name),
-                  React.createElement(Text, { style: styles.smallMuted }, item.dateStr + ' · ' + formatPrice(item.price_rubles))
+                  React.createElement(Text, { style: styles.smallMuted }, item.kind === 'place'
+                    ? item.dateStr + (item.place && item.place.category === 'Cafe' ? ' · Кафе' : item.place && item.place.category === 'Restaurant' ? ' · Ресторан' : ' · Заведение')
+                    : item.dateStr + ' · ' + formatPrice(item.price_rubles))
                 )
               );
             }))));
@@ -1022,7 +1107,8 @@ const ComponentFunction = function() {
     var query = useQuery('dishes');
     var context = useTheme();
     var params = props.route?.params || {};
-    var dish = query.data.find(function(row) { return row?.id === params.dishId; }) || null;
+    var place = params.place || null;
+    var dish = !place ? ((query.data || []).find(function(row) { return row?.id === params.dishId; }) || null) : null;
     var goRecipe = function() { if (dish) props.navigation.navigate('RecipeDetail', { dishId: dish.id }); };
     var revealRef = React.useRef(null);
     if (!revealRef.current) revealRef.current = new Animated.Value(0);
@@ -1047,7 +1133,7 @@ const ComponentFunction = function() {
         drop.stop();
         bursts.forEach(function(burst) { burst.stop(); });
       };
-    }, [params.dishId]);
+    }, [params.dishId, place && place.name]);
     var revealStyle = {
       width: '100%',
       alignItems: 'center',
@@ -1062,6 +1148,39 @@ const ComponentFunction = function() {
       React.createElement(StatusBar, { testID: 'StatusBar-Result', backgroundColor: backgroundColor, barStyle: 'light-content' }),
       React.createElement(View, { testID: 'View-29', style: styles.stackContent, componentId: 'result-content-wrap' },
         React.createElement(Header, { testID: 'Header-4', id: 'result', title: 'Congratulations!', back: function() { props.navigation.goBack(); } }),
+        place ? React.createElement(ScrollView, { style: styles.flexScroll, contentContainerStyle: { paddingTop: 18, paddingBottom: 24 }, componentId: 'result-place' },
+          React.createElement(Animated.View, { style: revealStyle },
+            React.createElement(View, { style: styles.resultReveal },
+              React.createElement(Text, { style: styles.celebration }, 'Tonight’s pick'),
+              React.createElement(View, { style: styles.sparkStage },
+                React.createElement(View, { style: styles.resultGlow }),
+                (place.photos || [])[0] ? React.createElement(Image, { source: { uri: place.photos[0] }, style: styles.resultImage, resizeMode: 'cover' }) :
+                  React.createElement(View, { style: [styles.resultImage, styles.imageFallback] }, React.createElement(Ionicons, { name: 'restaurant-outline', size: 36, color: textSecondary })),
+                sparks.map(function(value, index) {
+                  var angle = (Math.PI * 2 * index) / sparks.length;
+                  var distance = 78 + (index % 3) * 22;
+                  return React.createElement(Animated.View, { key: 'spark-' + index, pointerEvents: 'none', style: {
+                    position: 'absolute', left: '50%', top: '46%', width: index % 2 ? 8 : 5, height: index % 2 ? 8 : 5, borderRadius: 6, marginLeft: -4,
+                    backgroundColor: index % 3 === 0 ? '#F6C177' : index % 3 === 1 ? accentColor : '#F4E6D4',
+                    opacity: value.interpolate({ inputRange: [0, 0.12, 1], outputRange: [0, 1, 0] }),
+                    transform: [
+                      { translateX: value.interpolate({ inputRange: [0, 1], outputRange: [0, Math.cos(angle) * distance] }) },
+                      { translateY: value.interpolate({ inputRange: [0, 1], outputRange: [0, Math.sin(angle) * distance] }) },
+                      { scale: value.interpolate({ inputRange: [0, 0.25, 1], outputRange: [0.2, 1.15, 0.3] }) }
+                    ]
+                  } });
+                })),
+              React.createElement(Text, { style: [styles.title, { textAlign: 'center' }] }, place.name || 'Заведение'),
+              React.createElement(View, { style: styles.resultChips },
+                React.createElement(View, { style: styles.tagChip }, React.createElement(Text, { style: styles.tagChipText }, place.category === 'Cafe' ? 'Cafe' : place.category === 'Restaurant' ? 'Restaurant' : 'Заведение'))),
+              place.address ? React.createElement(Text, { style: [styles.bodyMuted, { textAlign: 'center' }] }, place.address) : null,
+              place.desc ? React.createElement(Text, { style: [styles.bodyMuted, { textAlign: 'center' }] }, place.desc) : null,
+              (place.photos || []).length > 1 ? React.createElement(ScrollView, { horizontal: true, style: { width: '100%' }, contentContainerStyle: { gap: 8, paddingVertical: 4 } },
+                place.photos.map(function(uri, photoIndex) {
+                  return React.createElement(Image, { key: String(photoIndex), source: { uri: uri }, style: { width: 96, height: 96, borderRadius: 16, backgroundColor: surfaceAltColor } });
+                })) : null)),
+          React.createElement(TouchableOpacity, { style: styles.againButton, onPress: function() { props.navigation.goBack(); } },
+            React.createElement(Text, { style: styles.bodyMuted }, 'No, I want something else'))) :
         dish ? React.createElement(View, { testID: 'View-30', style: [styles.resultCenter, { justifyContent: 'flex-start', paddingTop: 18 }], componentId: 'result-content' },
           React.createElement(Animated.View, { style: revealStyle },
             React.createElement(View, { style: styles.resultReveal },
@@ -1092,9 +1211,8 @@ const ComponentFunction = function() {
           React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-10', style: styles.againButton, onPress: function() { props.navigation.goBack(); }, componentId: 'result-again' },
             React.createElement(Text, { testID: 'Text-31', style: styles.bodyMuted, componentId: 'result-again-label' }, 'No, I want something else'))) :
           React.createElement(View, { testID: 'View-31', style: styles.resultCenter, componentId: 'result-no-match' },
-            React.createElement(Text, { testID: 'Text-32', style: styles.title, componentId: 'result-no-match-title' }, 'No dishes fit your budget'),
-            React.createElement(Text, { testID: 'Text-33', style: styles.celebration, componentId: 'result-no-match-budget' }, formatPrice(params.budget || 300)),
-            React.createElement(PrimaryButton, { testID: 'PrimaryButton-5', id: 'result-raise-budget', label: 'Raise dinner budget', onPress: function() { props.navigation.goBack(); } }))));
+            React.createElement(Text, { testID: 'Text-32', style: styles.title, componentId: 'result-no-match-title' }, 'Nothing matches this choice'),
+            React.createElement(PrimaryButton, { testID: 'PrimaryButton-5', id: 'result-raise-budget', label: 'Back to the choice', onPress: function() { props.navigation.goBack(); } }))));
   };
   // @end:SpinResultScreen
 
@@ -1107,7 +1225,7 @@ const ComponentFunction = function() {
     var dish = query.data.find(function(row) { return row?.id === id; }) || null;
     var ingredients = parseStructuredIngredients(dish?.ingredients);
     var steps = parseStructuredSteps(dish?.recipe_steps);
-    var dishTags = dish?.tags || [];
+    var dishTags = onlyFoodTags(dish?.tags);
 
     return React.createElement(View, { testID: 'View-32', style: [styles.screen, { paddingTop: insets.top }], componentId: 'recipe-detail-screen' },
       React.createElement(StatusBar, { testID: 'StatusBar-RecipeDetail', backgroundColor: backgroundColor, barStyle: 'light-content' }),
@@ -1231,7 +1349,7 @@ const ComponentFunction = function() {
       var serializedIngredients = serializeStructuredIngredients(ingredients);
       var serializedSteps = serializeStructuredSteps(steps);
       setError('');
-      insert.mutate({ dish_name: name.trim(), price_rubles: Number(price), ingredients: serializedIngredients, recipe_steps: serializedSteps, photo_uri: photoUri, tags: selectedTags }).then(function() {
+      insert.mutate({ dish_name: name.trim(), price_rubles: Number(price), ingredients: serializedIngredients, recipe_steps: serializedSteps, photo_uri: photoUri, tags: onlyFoodTags(selectedTags) }).then(function() {
         props.navigation.goBack();
       }, function() { setError('Couldn’t save this dish. Your details are still here—try saving again.'); });
     };
@@ -1436,7 +1554,7 @@ const ComponentFunction = function() {
         setIngredients(parseStructuredIngredients(dish.ingredients));
         setSteps(parseStructuredSteps(dish.recipe_steps));
         setPhotoUri(dish.photo_uri || getDishImage(dish));
-        setSelectedTags(dish.tags || []);
+        setSelectedTags(onlyFoodTags(dish.tags));
       }
     }, [dish?.id]);
 
@@ -1484,7 +1602,7 @@ const ComponentFunction = function() {
       var serializedIngredients = serializeStructuredIngredients(ingredients);
       var serializedSteps = serializeStructuredSteps(steps);
       setError('');
-      update.mutate({ id: dishId, data: { dish_name: name.trim(), price_rubles: Number(price), ingredients: serializedIngredients, recipe_steps: serializedSteps, photo_uri: photoUri, tags: selectedTags } }).then(function() {
+      update.mutate({ id: dishId, data: { dish_name: name.trim(), price_rubles: Number(price), ingredients: serializedIngredients, recipe_steps: serializedSteps, photo_uri: photoUri, tags: onlyFoodTags(selectedTags) } }).then(function() {
         props.navigation.goBack();
       }, function() { setError('Changes couldn’t be saved. Your dish details are still here.'); });
     };
