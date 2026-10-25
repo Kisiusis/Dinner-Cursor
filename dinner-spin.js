@@ -1,7 +1,7 @@
 const ComponentFunction = function() {
   // @section:imports @depends:[]
   const React = require('react');
-  const { View, Text: NativeText, ScrollView: NativeScrollView, TouchableOpacity, TextInput: NativeTextInput, Image, StyleSheet, StatusBar, Platform, Alert, LayoutAnimation, Modal, Animated, PanResponder, Dimensions, PermissionsAndroid } = require('react-native');
+  const { View, Text: NativeText, ScrollView: NativeScrollView, TouchableOpacity, TextInput: NativeTextInput, Image, StyleSheet, StatusBar, Platform, Alert, LayoutAnimation, Modal, Animated, PanResponder } = require('react-native');
   var ScrollView = React.forwardRef(function(props, ref) {
     return React.createElement(NativeScrollView, Object.assign({
       showsVerticalScrollIndicator: false,
@@ -295,72 +295,6 @@ const ComponentFunction = function() {
     list.forEach(function(uri) { if (unique.indexOf(uri) < 0) unique.push(uri); });
     return unique.slice(0, 10);
   };
-  var optionalModule = function(name) {
-    try { return require(name); } catch (err) { return null; }
-  };
-  var loadDevicePhotos = function() {
-    var take = function(list) {
-      var unique = [];
-      (list || []).forEach(function(uri) { if (uri && unique.indexOf(uri) < 0) unique.push(uri); });
-      return unique.slice(0, 150);
-    };
-    var allowAndroid = function() {
-      if (Platform.OS !== 'android' || !PermissionsAndroid || !PermissionsAndroid.request) return Promise.resolve(true);
-      var perm = (PermissionsAndroid.PERMISSIONS && (PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES || PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE)) || null;
-      if (!perm) return Promise.resolve(true);
-      return PermissionsAndroid.request(perm).then(function(result) {
-        return result === PermissionsAndroid.RESULTS.GRANTED;
-      }).catch(function() { return false; });
-    };
-    var fromExpo = function() {
-      var media = optionalModule('expo-media-library');
-      media = media && (media.default || media);
-      if (!media || !media.getAssetsAsync) return Promise.resolve(null);
-      var ask = media.requestPermissionsAsync ? media.requestPermissionsAsync() : Promise.resolve({ granted: true, status: 'granted' });
-      return ask.then(function(permission) {
-        var allowed = !permission || permission.granted || permission.status === 'granted' || permission.status === 'limited';
-        if (!allowed) return [];
-        return media.getAssetsAsync({ first: 150, mediaType: media.MediaType && media.MediaType.photo ? media.MediaType.photo : 'photo' }).then(function(page) {
-          return take((page && page.assets || []).map(function(asset) { return asset && (asset.uri || asset.localUri); }));
-        });
-      });
-    };
-    var fromRoll = function() {
-      var rollPkg = optionalModule('@react-native-camera-roll/camera-roll') || optionalModule('@react-native-community/cameraroll');
-      var CameraRoll = rollPkg && (rollPkg.CameraRoll || rollPkg.default || rollPkg);
-      if (!CameraRoll || !CameraRoll.getPhotos) return Promise.resolve(null);
-      return CameraRoll.getPhotos({ first: 150, assetType: 'Photos' }).then(function(result) {
-        return take((result && result.edges || []).map(function(edge) {
-          return edge && edge.node && edge.node.image && edge.node.image.uri;
-        }));
-      });
-    };
-    return allowAndroid().then(function(allowed) {
-      if (!allowed) return [];
-      var fromNative = function() {
-        var mods = require('react-native').NativeModules || {};
-        var mod = mods.RNCCameraRoll || mods.RNCameraRoll || mods.CameraRoll;
-        if (!mod || typeof mod.getPhotos !== 'function') return Promise.resolve(null);
-        try {
-          var pending = mod.getPhotos({ first: 150, assetType: 'Photos', groupTypes: 'All' });
-          if (!pending || !pending.then) return Promise.resolve(null);
-          return pending.then(function(result) {
-            return take((result && result.edges || []).map(function(edge) {
-              return edge && edge.node && edge.node.image && edge.node.image.uri;
-            }));
-          }).catch(function() { return null; });
-        } catch (err) { return Promise.resolve(null); }
-      };
-      return fromExpo().then(function(uris) {
-        if (uris && uris.length) return uris;
-        return fromRoll().then(function(rolled) {
-          if (rolled && rolled.length) return rolled;
-          return fromNative().then(function(nativeUris) { return nativeUris || rolled || uris || []; });
-        });
-      });
-    }).catch(function() { return []; });
-  };
-  var albumCallback = null;
   var capturePhoto = function(camera, extra) {
     var payload = Object.assign({
       locale: 'ru', language: 'ru',
@@ -714,7 +648,7 @@ const ComponentFunction = function() {
           React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-ManageMenu', style: styles.iconAction, onPress: function() { props.navigation.navigate('MenuManager'); }, componentId: 'recipes-manage' },
             React.createElement(Ionicons, { testID: 'Ionicons-Gear', name: 'settings-outline', size: 24, color: textSecondary }))
         ) }),
-        recipes.length ? React.createElement(TextInput, { style: [styles.searchInput, { marginTop: 8 }], value: search, onChangeText: setSearch, placeholder: 'Search by name', autoCapitalize: 'none', autoCorrect: false, componentId: 'recipes-search' }) : null,
+        recipes.length ? React.createElement(TextInput, { style: styles.recipeSearch, value: search, onChangeText: setSearch, placeholder: 'Search by name', autoCapitalize: 'none', autoCorrect: false, componentId: 'recipes-search' }) : null,
         !recipes.length ? React.createElement(View, { testID: 'View-22', style: styles.centerEmpty, componentId: 'recipes-empty' },
           React.createElement(Text, { testID: 'Text-17', style: [styles.title, { fontSize: 22}], componentId: 'recipes-empty-title' }, 'Your saved recipes'),
           React.createElement(Text, { testID: 'Text-18', style: styles.bodyMuted, componentId: 'recipes-empty-copy' }, 'Add a dish to keep its recipe here.'),
@@ -888,12 +822,6 @@ const ComponentFunction = function() {
         return next;
       });
     };
-    var openAlbum = function() {
-      var room = 10 - (photosState[0] || []).length;
-      if (room <= 0) return;
-      albumCallback = function(uris) { (uris || []).slice(0, room).forEach(appendPlacePhoto); };
-      props.navigation.navigate('PhotoAlbum', { limit: room });
-    };
     var addPlacePhoto = function() {
       Alert.alert('Фото заведения', 'Можно добавить до 10 фото.', [
         { text: 'Сделать фото', onPress: function() {
@@ -902,7 +830,9 @@ const ComponentFunction = function() {
             if (uri) appendPlacePhoto(uri);
           }).catch(function() {});
         } },
-        { text: 'Выбрать из галереи', onPress: openAlbum },
+        { text: 'Выбрать из галереи', onPress: function() {
+          camera.pickImage().then(function(res) { collectPhotoUris(res).forEach(appendPlacePhoto); }).catch(function() {});
+        } },
         { text: 'Отмена', style: 'cancel' }
       ]);
     };
@@ -938,7 +868,7 @@ const ComponentFunction = function() {
     };
     return React.createElement(View, { style: [styles.screen, { paddingTop: insets.top }], componentId: 'place-editor-screen' },
       React.createElement(StatusBar, { backgroundColor: backgroundColor, barStyle: 'light-content' }),
-      React.createElement(Header, { id: 'place-editor', title: isNew ? 'Новое заведение' : 'Редактирование заведения', back: function() { albumCallback = null; props.navigation.goBack(); } }),
+      React.createElement(Header, { id: 'place-editor', title: isNew ? 'Новое заведение' : 'Редактирование заведения', back: function() { props.navigation.goBack(); } }),
       React.createElement(ScrollView, { style: styles.flexScroll, keyboardShouldPersistTaps: 'handled', contentContainerStyle: { paddingHorizontal: 16, paddingBottom: insets.bottom + 120 } },
         React.createElement(Text, { style: styles.fieldLabel }, 'Название'),
         React.createElement(TextInput, { style: styles.input, value: nameState[0], onChangeText: nameState[1], placeholder: 'Название кафе / ресторана' }),
@@ -947,7 +877,7 @@ const ComponentFunction = function() {
         React.createElement(Text, { style: styles.fieldLabel }, 'Прайс, описание'),
         React.createElement(TextInput, { style: [styles.textArea, { minHeight: 96 }], value: descState[0], onChangeText: descState[1], placeholder: 'Прайс, описание...', multiline: true }),
         React.createElement(Text, { style: styles.fieldLabel }, 'Фотографии'),
-        React.createElement(Text, { style: styles.smallMuted }, 'До 10 фото. В альбоме отметьте несколько и нажмите галочку справа сверху.'),
+        React.createElement(Text, { style: styles.smallMuted }, 'До 10 фото.'),
         React.createElement(View, { style: styles.placePhotoRow },
           photos.map(function(uri, photoIndex) {
             return React.createElement(View, { key: String(photoIndex), style: styles.placePhotoTile },
@@ -970,69 +900,6 @@ const ComponentFunction = function() {
     );
   };
   // @end:PlaceEditorScreen
-
-  // @section:PhotoAlbumScreen @depends:[ThemeContext,shared-components,styles]
-  var PhotoAlbumScreen = function(props) {
-    var insets = useSafeAreaInsets();
-    var limit = Math.max(1, Math.min(10, Number(props.route?.params?.limit) || 10));
-    var photosState = React.useState([]);
-    var photos = photosState[0];
-    var selectedState = React.useState([]);
-    var selected = selectedState[0];
-    var statusState = React.useState('loading');
-    var status = statusState[0];
-    var tile = Math.floor(Dimensions.get('window').width / 3);
-    var reload = function() {
-      statusState[1]('loading');
-      loadDevicePhotos().then(function(uris) {
-        photosState[1](uris || []);
-        statusState[1](uris && uris.length ? 'ready' : 'empty');
-      }).catch(function() { statusState[1]('empty'); });
-    };
-    React.useEffect(function() { reload(); }, []);
-    var toggle = function(uri) {
-      selectedState[1](function(prev) {
-        var list = prev || [];
-        var at = list.indexOf(uri);
-        if (at >= 0) return list.filter(function(item) { return item !== uri; });
-        if (list.length >= limit) return list;
-        return list.concat([uri]);
-      });
-    };
-    var confirmAlbum = function() {
-      if (!selected.length) return;
-      var deliver = albumCallback;
-      albumCallback = null;
-      if (deliver) deliver(selected.slice());
-      props.navigation.goBack();
-    };
-    var closeAlbum = function() {
-      albumCallback = null;
-      props.navigation.goBack();
-    };
-    var check = React.createElement(TouchableOpacity, { style: styles.iconAction, onPress: confirmAlbum, disabled: !selected.length, accessibilityLabel: 'Использовать' },
-      React.createElement(Ionicons, { name: 'checkmark', size: 28, color: selected.length ? accentColor : textSecondary }));
-    return React.createElement(View, { style: [styles.screen, { paddingTop: insets.top }], componentId: 'photo-album-screen' },
-      React.createElement(StatusBar, { backgroundColor: backgroundColor, barStyle: 'light-content' }),
-      React.createElement(Header, { id: 'photo-album', title: selected.length ? selected.length + ' из ' + limit : 'Фотоальбом', back: closeAlbum, action: check }),
-      status === 'loading' ? React.createElement(View, { style: styles.centerEmpty },
-        React.createElement(Text, { style: styles.bodyMuted }, 'Открываем фотоальбом…')) :
-        !photos.length ? React.createElement(View, { style: styles.centerEmpty },
-          React.createElement(Text, { style: styles.title }, 'Фотоальбом пуст'),
-          React.createElement(Text, { style: [styles.bodyMuted, { textAlign: 'center' }] }, 'Разрешите доступ к фотографиям, чтобы отметить несколько снимков.'),
-          React.createElement(PrimaryButton, { id: 'album-retry', label: 'Повторить', onPress: reload })) :
-          React.createElement(ScrollView, { style: styles.flexScroll, contentContainerStyle: { paddingBottom: insets.bottom + 24 } },
-            React.createElement(View, { style: styles.albumGrid },
-              photos.map(function(uri) {
-                var order = selected.indexOf(uri);
-                return React.createElement(TouchableOpacity, { key: uri, activeOpacity: 0.85, style: { width: tile, height: tile, padding: 1, position: 'relative' }, onPress: function() { toggle(uri); } },
-                  React.createElement(Image, { source: { uri: uri }, style: styles.albumImage, resizeMode: 'cover' }),
-                  React.createElement(View, { style: [styles.albumCheck, order >= 0 ? styles.albumCheckOn : null] },
-                    order >= 0 ? React.createElement(Text, { style: styles.albumCheckText }, String(order + 1)) : null));
-              }))
-          ));
-  };
-  // @end:PhotoAlbumScreen
 
   // @section:HistoryScreen @depends:[ThemeContext,shared-components,styles]
   var HistoryScreen = function(props) {
@@ -1806,11 +1673,6 @@ const ComponentFunction = function() {
     placePhotoImage: { width: 76, height: 76 },
     placePhotoRemove: { position: 'absolute', top: 4, right: 4, width: 22, height: 22, borderRadius: 11, backgroundColor: 'rgba(12,11,10,0.75)', alignItems: 'center', justifyContent: 'center' },
     placePhotoAdd: { width: 76, height: 76, borderRadius: radiusSm, borderWidth: 1, borderColor: borderColor, backgroundColor: surfaceAltColor, alignItems: 'center', justifyContent: 'center', gap: 2 },
-    albumGrid: { flexDirection: 'row', flexWrap: 'wrap' },
-    albumImage: { width: '100%', height: '100%', backgroundColor: surfaceAltColor },
-    albumCheck: { position: 'absolute', top: 8, right: 8, width: 26, height: 26, borderRadius: 13, borderWidth: 2, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(12,11,10,0.35)' },
-    albumCheckOn: { backgroundColor: accentColor, borderColor: accentColor },
-    albumCheckText: { color: '#1A0C08', fontSize: 12, fontWeight: '700' },
     resultImage: { width: '100%', height: 200, borderRadius: radiusMd, backgroundColor: surfaceAltColor },
     againButton: { minHeight: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
     recipeDetailColumn: { gap: 14, width: '100%' },
@@ -1869,7 +1731,8 @@ const ComponentFunction = function() {
     tagWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
     invalidField: { borderColor: '#E25B52', borderWidth: 1.5 },
     searchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12, marginBottom: 12 },
-    searchInput: { flex: 1, minHeight: 48, borderRadius: radiusPill, backgroundColor: cardColor, borderWidth: 1, borderColor: borderColor, paddingHorizontal: 16, color: textPrimary, fontSize: 15 },
+    searchInput: { flex: 1, height: 48, minHeight: 48, maxHeight: 48, borderRadius: radiusPill, backgroundColor: cardColor, borderWidth: 1, borderColor: borderColor, paddingHorizontal: 16, color: textPrimary, fontSize: 15 },
+    recipeSearch: { width: '100%', height: 48, minHeight: 48, maxHeight: 48, flexGrow: 0, flexShrink: 0, marginTop: 8, marginBottom: 4, borderRadius: 24, backgroundColor: cardColor, borderWidth: 1, borderColor: borderColor, paddingHorizontal: 16, paddingVertical: 0, color: textPrimary, fontSize: 15 },
     searchAdd: { width: 48, height: 48, borderRadius: 24, backgroundColor: accentColor, alignItems: 'center', justifyContent: 'center' },
     swipeShell: { marginBottom: 10, overflow: 'hidden' },
     swipeFront: { backgroundColor: cardColor, width: '100%', borderRadius: radiusMd },
@@ -1915,7 +1778,6 @@ const ComponentFunction = function() {
       React.createElement(Stack.Screen, { testID: 'Screen-9', name: 'Camera', component: CameraScreen }),
       React.createElement(Stack.Screen, { testID: 'Screen-10', name: 'MenuManager', component: MenuManagerScreen }),
       React.createElement(Stack.Screen, { testID: 'Screen-12', name: 'PlaceEditor', component: PlaceEditorScreen }),
-      React.createElement(Stack.Screen, { testID: 'Screen-13', name: 'PhotoAlbum', component: PhotoAlbumScreen }),
       React.createElement(Stack.Screen, { testID: 'Screen-11', name: 'History', component: HistoryScreen }));
   };
   // @end:MainNavigator
