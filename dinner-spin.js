@@ -1,7 +1,7 @@
 const ComponentFunction = function() {
   // @section:imports @depends:[]
   const React = require('react');
-  const { View, Text: NativeText, ScrollView: NativeScrollView, TouchableOpacity, TextInput: NativeTextInput, Image, StyleSheet, StatusBar, Platform, Alert, LayoutAnimation, Modal, Animated, PanResponder } = require('react-native');
+  const { View, Text: NativeText, ScrollView: NativeScrollView, TouchableOpacity, TextInput: NativeTextInput, Image, StyleSheet, StatusBar, Platform, Alert, LayoutAnimation, Modal, Animated, PanResponder, Dimensions } = require('react-native');
   var ScrollView = React.forwardRef(function(props, ref) {
     return React.createElement(NativeScrollView, Object.assign({
       showsVerticalScrollIndicator: false,
@@ -234,10 +234,89 @@ const ComponentFunction = function() {
         }, React.createElement(Text, { testID: 'Text-3', style: [styles.languageLabel, context.language === code ? styles.languageLabelActive : null], componentId: 'language-switch-label-' + code.toLowerCase() }, code));
       }));
   };
+  var PhotoViewer = function(props) {
+    var uri = props.uri || '';
+    var onCloseRef = React.useRef(props.onClose);
+    onCloseRef.current = props.onClose;
+    var scale = React.useRef(new Animated.Value(1)).current;
+    var panX = React.useRef(new Animated.Value(0)).current;
+    var panY = React.useRef(new Animated.Value(0)).current;
+    var scaleRef = React.useRef(1);
+    var panRef = React.useRef({ x: 0, y: 0 });
+    var pinchRef = React.useRef(false);
+    var startDistRef = React.useRef(0);
+    var baseScaleRef = React.useRef(1);
+    var basePanRef = React.useRef({ x: 0, y: 0 });
+    var responder = React.useRef(PanResponder.create({
+      onStartShouldSetPanResponder: function() { return true; },
+      onMoveShouldSetPanResponder: function() { return true; },
+      onPanResponderTerminationRequest: function() { return false; },
+      onPanResponderGrant: function() {
+        pinchRef.current = false;
+        startDistRef.current = 0;
+        basePanRef.current = { x: panRef.current.x, y: panRef.current.y };
+        baseScaleRef.current = scaleRef.current || 1;
+      },
+      onPanResponderMove: function(evt, gesture) {
+        var touches = evt.nativeEvent.touches || [];
+        if (touches.length >= 2) {
+          pinchRef.current = true;
+          var dx = touches[0].pageX - touches[1].pageX;
+          var dy = touches[0].pageY - touches[1].pageY;
+          var dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          if (!startDistRef.current) {
+            startDistRef.current = dist;
+            baseScaleRef.current = scaleRef.current || 1;
+          }
+          var next = baseScaleRef.current * (dist / startDistRef.current);
+          if (next < 1) next = 1;
+          if (next > 4) next = 4;
+          scaleRef.current = next;
+          scale.setValue(next);
+          return;
+        }
+        if (scaleRef.current > 1.01) {
+          var x = basePanRef.current.x + gesture.dx;
+          var y = basePanRef.current.y + gesture.dy;
+          panRef.current = { x: x, y: y };
+          panX.setValue(x);
+          panY.setValue(y);
+        }
+      },
+      onPanResponderRelease: function(_, gesture) {
+        startDistRef.current = 0;
+        var pinched = pinchRef.current;
+        pinchRef.current = false;
+        if (pinched) return;
+        if (Math.abs(gesture.dx) > 12 || Math.abs(gesture.dy) > 12) return;
+        if (onCloseRef.current) onCloseRef.current();
+      },
+      onPanResponderTerminate: function() { startDistRef.current = 0; pinchRef.current = false; }
+    })).current;
+    React.useEffect(function() {
+      scale.setValue(1);
+      panX.setValue(0);
+      panY.setValue(0);
+      scaleRef.current = 1;
+      panRef.current = { x: 0, y: 0 };
+    }, [uri]);
+    if (!uri) return null;
+    var size = Dimensions.get('window');
+    return React.createElement(Modal, { visible: true, transparent: true, animationType: 'fade', onRequestClose: function() { if (onCloseRef.current) onCloseRef.current(); } },
+      React.createElement(View, Object.assign({ style: styles.photoViewer }, responder.panHandlers),
+        React.createElement(Animated.Image, {
+          source: { uri: uri },
+          resizeMode: 'contain',
+          style: { width: size.width, height: size.height, transform: [{ translateX: panX }, { translateY: panY }, { scale: scale }] }
+        })));
+  };
   var RecipeStepHint = function(props) {
     var openState = React.useState(false);
     var visible = openState[0];
     var setVisible = openState[1];
+    var zoomState = React.useState(false);
+    var zoom = zoomState[0];
+    var setZoom = zoomState[1];
     var uri = props.stepPhoto || getDishImage({ dish_name: props.dishName });
     return React.createElement(View, { testID: 'View-4', style: styles.stepRow, componentId: props.id + '-row' },
       React.createElement(View, { testID: 'View-5', style: styles.stepNumber, componentId: props.id + '-number' },
@@ -252,10 +331,12 @@ const ComponentFunction = function() {
               React.createElement(Text, { testID: 'Text-7', style: styles.sectionTitle, componentId: props.id + '-modal-title' }, 'Visual hint'),
               React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-5', onPress: function() { setVisible(false); }, componentId: props.id + '-modal-close' },
                 React.createElement(Ionicons, { testID: 'Ionicons-4', name: 'close-circle-outline', size: 28, color: textSecondary }))),
-            uri ? React.createElement(Image, { testID: 'Image-2', source: { uri: uri }, style: styles.hintModalImage, resizeMode: 'cover', componentId: props.id + '-hint-image' }) :
+            uri ? React.createElement(TouchableOpacity, { activeOpacity: 0.92, onPress: function() { setZoom(true); } },
+              React.createElement(Image, { testID: 'Image-2', source: { uri: uri }, style: styles.hintModalImage, resizeMode: 'cover', componentId: props.id + '-hint-image' })) :
               React.createElement(View, { testID: 'View-9', style: styles.hintModalEmpty, componentId: props.id + '-hint-empty' },
                 React.createElement(Ionicons, { testID: 'Ionicons-5', name: 'restaurant-outline', size: 40, color: accentColor })),
-            React.createElement(Text, { testID: 'Text-8', style: styles.bodyMuted, componentId: props.id + '-hint-caption' }, props.step)))));
+            React.createElement(Text, { testID: 'Text-8', style: styles.bodyMuted, componentId: props.id + '-hint-caption' }, props.step)))),
+      React.createElement(PhotoViewer, { uri: zoom && uri ? uri : '', onClose: function() { setZoom(false); } }));
   };
   // @end:shared-components
 
@@ -280,40 +361,47 @@ const ComponentFunction = function() {
       .replace(/&#(\d+);/g, function(_, code) { return String.fromCharCode(Number(code)); })
       .replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;|&apos;/g, "'");
   };
+  var tidyTranslation = function(value) {
+    var text = decodeTranslated(value).replace(/\u00a0/g, ' ');
+    var pass;
+    for (pass = 0; pass < 2; pass += 1) {
+      if (!/%[0-9A-Fa-f]{2}/.test(text)) break;
+      try { text = decodeURIComponent(text.replace(/\+/g, ' ')); }
+      catch (err) { break; }
+    }
+    return text.replace(/%20/gi, ' ').replace(/%0A/gi, '\n').replace(/[ \t]{2,}/g, ' ').trim();
+  };
+  var translateOne = function(text, from, to) {
+    var source = String(text || '').replace(/\s+/g, ' ').trim();
+    if (!source) return Promise.resolve('');
+    var body = 'q=' + encodeURIComponent(source).replace(/%20/g, '+') + '&langpair=' + from + '|' + to;
+    return fetch('https://api.mymemory.translated.net/get', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body
+    }).then(function(response) { return response.json(); }).then(function(data) {
+      var raw = data && data.responseData && data.responseData.translatedText;
+      if (!raw || /MYMEMORY WARNING|QUERY LENGTH LIMIT|INVALID LANGUAGE/i.test(raw)) return source;
+      var tidy = tidyTranslation(raw);
+      if (!tidy || /MYMEMORY WARNING|%20/i.test(tidy)) return source;
+      return tidy;
+    }).catch(function() { return source; });
+  };
   var translateLines = function(lines, from, to) {
     var clean = (lines || []).map(function(line) { return String(line || '').replace(/\s+/g, ' ').trim(); });
-    var batches = [];
-    var current = [];
-    var size = 0;
-    clean.forEach(function(line, index) {
-      var nextSize = size + line.length + 1;
-      if (current.length && nextSize > 420) {
-        batches.push(current);
-        current = [];
-        size = 0;
-      }
-      current.push({ index: index, text: line || ' ' });
-      size += line.length + 1;
-    });
-    if (current.length) batches.push(current);
-    var translated = clean.slice();
-    var chain = Promise.resolve();
-    batches.forEach(function(batch) {
-      chain = chain.then(function() {
-        var query = batch.map(function(item) { return item.text; }).join('\n');
-        var url = 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(query) + '&langpair=' + from + '|' + to;
-        return fetch(url).then(function(response) { return response.json(); }).then(function(data) {
-          var text = data && data.responseData && data.responseData.translatedText;
-          if (!text || /MYMEMORY WARNING|QUERY LENGTH LIMIT|INVALID LANGUAGE/i.test(text)) return;
-          var parts = decodeTranslated(text).split(/\n/);
-          batch.forEach(function(item, partIndex) {
-            var line = parts[partIndex] && String(parts[partIndex]).trim();
-            if (line && !/MYMEMORY WARNING/i.test(line)) translated[item.index] = line;
-          });
-        }).catch(function() {});
+    var out = clean.slice();
+    var cursor = 0;
+    var worker = function() {
+      if (cursor >= clean.length) return Promise.resolve();
+      var current = cursor;
+      cursor += 1;
+      if (!clean[current]) return worker();
+      return translateOne(clean[current], from, to).then(function(line) {
+        out[current] = line || clean[current];
+        return worker();
       });
-    });
-    return chain.then(function() { return translated; });
+    };
+    return Promise.all([worker(), worker(), worker()]).then(function() { return out; });
   };
   var parseMeasure = function(measure) {
     var fractions = { '¼': '1/4', '½': '1/2', '¾': '3/4', '⅓': '1/3', '⅔': '2/3', '⅛': '1/8' };
@@ -1278,6 +1366,9 @@ const ComponentFunction = function() {
       for (var sparkIndex = 0; sparkIndex < 14; sparkIndex += 1) sparkRef.current.push(new Animated.Value(0));
     }
     var sparks = sparkRef.current;
+    var zoomState = React.useState('');
+    var zoomUri = zoomState[0];
+    var setZoomUri = zoomState[1];
     React.useEffect(function() {
       reveal.setValue(0);
       var drop = Animated.spring(reveal, { toValue: 1, friction: 7, tension: 58, useNativeDriver: Platform.OS !== 'web' });
@@ -1313,7 +1404,8 @@ const ComponentFunction = function() {
               React.createElement(Text, { style: styles.celebration }, 'Tonight’s pick'),
               React.createElement(View, { style: styles.sparkStage },
                 React.createElement(View, { style: styles.resultGlow }),
-                (place.photos || [])[0] ? React.createElement(Image, { source: { uri: place.photos[0] }, style: styles.resultImage, resizeMode: 'cover' }) :
+                (place.photos || [])[0] ? React.createElement(TouchableOpacity, { activeOpacity: 0.92, style: { width: '100%' }, onPress: function() { setZoomUri(place.photos[0]); } },
+                  React.createElement(Image, { source: { uri: place.photos[0] }, style: styles.resultImage, resizeMode: 'cover' })) :
                   React.createElement(View, { style: [styles.resultImage, styles.imageFallback] }, React.createElement(Ionicons, { name: 'restaurant-outline', size: 36, color: textSecondary })),
                 sparks.map(function(value, index) {
                   var angle = (Math.PI * 2 * index) / sparks.length;
@@ -1336,7 +1428,8 @@ const ComponentFunction = function() {
               place.desc ? React.createElement(Text, { style: [styles.bodyMuted, { textAlign: 'center' }] }, place.desc) : null,
               (place.photos || []).length > 1 ? React.createElement(ScrollView, { horizontal: true, style: { width: '100%' }, contentContainerStyle: { gap: 8, paddingVertical: 4 } },
                 place.photos.map(function(uri, photoIndex) {
-                  return React.createElement(Image, { key: String(photoIndex), source: { uri: uri }, style: { width: 96, height: 96, borderRadius: 16, backgroundColor: surfaceAltColor } });
+                  return React.createElement(TouchableOpacity, { key: String(photoIndex), activeOpacity: 0.92, onPress: function() { setZoomUri(uri); } },
+                    React.createElement(Image, { source: { uri: uri }, style: { width: 96, height: 96, borderRadius: 16, backgroundColor: surfaceAltColor } }));
                 })) : null)),
           React.createElement(TouchableOpacity, { style: styles.againButton, onPress: function() { props.navigation.goBack(); } },
             React.createElement(Text, { style: styles.bodyMuted }, 'No, I want something else'))) :
@@ -1371,7 +1464,8 @@ const ComponentFunction = function() {
             React.createElement(Text, { testID: 'Text-31', style: styles.bodyMuted, componentId: 'result-again-label' }, 'No, I want something else'))) :
           React.createElement(View, { testID: 'View-31', style: styles.resultCenter, componentId: 'result-no-match' },
             React.createElement(Text, { testID: 'Text-32', style: styles.title, componentId: 'result-no-match-title' }, 'Nothing matches this choice'),
-            React.createElement(PrimaryButton, { testID: 'PrimaryButton-5', id: 'result-raise-budget', label: 'Back to the choice', onPress: function() { props.navigation.goBack(); } }))));
+            React.createElement(PrimaryButton, { testID: 'PrimaryButton-5', id: 'result-raise-budget', label: 'Back to the choice', onPress: function() { props.navigation.goBack(); } }))),
+        React.createElement(PhotoViewer, { uri: zoomUri, onClose: function() { setZoomUri(''); } }));
   };
   // @end:SpinResultScreen
 
@@ -1385,6 +1479,9 @@ const ComponentFunction = function() {
     var ingredients = parseStructuredIngredients(dish?.ingredients);
     var steps = parseStructuredSteps(dish?.recipe_steps);
     var dishTags = onlyFoodTags(dish?.tags);
+    var zoomState = React.useState('');
+    var zoomUri = zoomState[0];
+    var setZoomUri = zoomState[1];
 
     return React.createElement(View, { testID: 'View-32', style: [styles.screen, { paddingTop: insets.top }], componentId: 'recipe-detail-screen' },
       React.createElement(StatusBar, { testID: 'StatusBar-RecipeDetail', backgroundColor: backgroundColor, barStyle: 'light-content' }),
@@ -1392,7 +1489,8 @@ const ComponentFunction = function() {
         React.createElement(Header, { testID: 'Header-5', id: 'recipe-detail', title: 'Recipe', back: function() { props.navigation.goBack(); } }),
         React.createElement(ScrollView, { testID: 'ScrollView-4', style: styles.flexScroll, contentContainerStyle: { paddingTop: 16, paddingBottom: insets.bottom + SCROLL_EXTRA_PADDING }, componentId: 'recipe-detail-scroll' },
           dish ? React.createElement(View, { testID: 'View-34', style: styles.recipeDetailColumn, componentId: 'recipe-detail-body' },
-            React.createElement(DishImage, { testID: 'DishImage-5', dish: dish, style: styles.detailImage, componentId: 'recipe-detail-image' }),
+            React.createElement(TouchableOpacity, { activeOpacity: 0.92, style: { width: '100%' }, onPress: function() { var photo = getDishImage(dish); if (photo) setZoomUri(photo); } },
+              React.createElement(DishImage, { testID: 'DishImage-5', dish: dish, style: styles.detailImage, componentId: 'recipe-detail-image' })),
             React.createElement(Text, { testID: 'Text-34', style: styles.title, componentId: 'recipe-detail-name' }, dish.dish_name || 'Dinner'),
             React.createElement(Text, { testID: 'Test-35', style: styles.secondary, componentId: 'recipe-detail-meta' }, context.translate('About') + ' ' + dishDetails(dish).minutes + ' ' + context.translate('min') + ' · ' + formatPrice(dish.price_rubles)),
             
@@ -1414,7 +1512,8 @@ const ComponentFunction = function() {
               steps.length ? steps.map(function(stepObj, index) {
                 return React.createElement(RecipeStepHint, { testID: 'RecipeStepHint-1', key: index, id: 'recipe-step-' + index, dishName: dish.dish_name, step: stepObj.text, stepPhoto: stepObj.photo, index: index });
               }) : React.createElement(Text, { testID: 'Test-40', style: styles.emptyLine, componentId: 'recipe-no-steps' }, 'No cooking steps added yet.'))) :
-            React.createElement(Text, { testID: 'Test-41', style: styles.emptyLine, componentId: 'recipe-missing' }, 'This recipe is no longer in your menu.'))));
+            React.createElement(Text, { testID: 'Test-41', style: styles.emptyLine, componentId: 'recipe-missing' }, 'This recipe is no longer in your menu.'))),
+        React.createElement(PhotoViewer, { uri: zoomUri, onClose: function() { setZoomUri(''); } }));
   };
   // @end:RecipeDetailScreen
 
@@ -2017,6 +2116,7 @@ const ComponentFunction = function() {
     primaryButtonText: { color: onAccentColor, fontSize: 15, fontWeight: '700', letterSpacing: 0.6 },
     emptyCard: { minHeight: 220, backgroundColor: cardColor, borderRadius: radiusMd, padding: 24, justifyContent: 'center', gap: 14, borderWidth: 1, borderColor: borderColor },
     centerEmpty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 14 },
+    photoViewer: { flex: 1, backgroundColor: '#000000', alignItems: 'center', justifyContent: 'center' },
     menuRow: { minHeight: 84, backgroundColor: cardColor, borderRadius: radiusMd, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10, borderWidth: 1, borderColor: borderColor },
     menuImage: { width: 64, height: 64, borderRadius: radiusSm, backgroundColor: surfaceAltColor },
     menuInfo: { flex: 1, minWidth: 0, gap: 3 },
@@ -2146,10 +2246,18 @@ const ComponentFunction = function() {
       setResults([]);
       var lookup = /[а-яё]/i.test(text) ? translateLines([text], 'ru', 'en').then(function(lines) { return lines[0] || text; }) : Promise.resolve(text);
       lookup.then(function(english) {
-        var term = String(english || text).trim() || text;
-        return fetch('https://www.themealdb.com/api/json/v1/1/search.php?s=' + encodeURIComponent(term));
-      }).then(function(response) { return response.json(); }).then(function(data) {
-        var meals = data && data.meals || [];
+        var term = tidyTranslation(english || text).replace(/%20/gi, ' ').trim() || text;
+        var load = function(value) {
+          return fetch('https://www.themealdb.com/api/json/v1/1/search.php?s=' + encodeURIComponent(value)).then(function(response) { return response.json(); });
+        };
+        return load(term).then(function(data) {
+          var meals = data && data.meals || [];
+          if (meals.length || term.indexOf(' ') < 0) return meals;
+          var word = term.split(/\s+/).slice().sort(function(a, b) { return b.length - a.length; })[0];
+          if (!word || word === term) return meals;
+          return load(word).then(function(retry) { return retry && retry.meals || []; });
+        });
+      }).then(function(meals) {
         var rows = meals.map(function(meal) {
           return { id: meal.idMeal, name: meal.strMeal, thumb: meal.strMealThumb || '' };
         });
