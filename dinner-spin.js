@@ -1,7 +1,13 @@
 const ComponentFunction = function() {
   // @section:imports @depends:[]
   const React = require('react');
-  const { View, Text: NativeText, ScrollView, TouchableOpacity, TextInput: NativeTextInput, Image, StyleSheet, StatusBar, Platform, Alert, LayoutAnimation, Modal, Animated } = require('react-native');
+  const { View, Text: NativeText, ScrollView: NativeScrollView, TouchableOpacity, TextInput: NativeTextInput, Image, StyleSheet, StatusBar, Platform, Alert, LayoutAnimation, Modal, Animated, PanResponder } = require('react-native');
+  var ScrollView = function(props) {
+    return React.createElement(NativeScrollView, Object.assign({
+      showsVerticalScrollIndicator: false,
+      showsHorizontalScrollIndicator: false
+    }, props), props.children);
+  };
   const { Ionicons } = require('@react-native-vector-icons/ionicons');
   const { createBottomTabNavigator } = require('@react-navigation/bottom-tabs');
   const { createStackNavigator } = require('@react-navigation/stack');
@@ -88,7 +94,9 @@ const ComponentFunction = function() {
     'View photo': 'Посмотреть фото', 'Replace photo': 'Заменить фото', 'Remove photo': 'Удалить фото',
     'History': 'История выпавших блюд', 'No history yet': 'История пока пуста',
     'Filter dishes': 'Фильтр блюд', 'Restaurants / Cafes': 'Рестораны / Кафе',
-    'Recipes & Places': 'Рецепты и заведения', 'Pasta': 'Паста', 'Comfort food': 'Домашняя еда'
+    'Recipes & Places': 'Рецепты и заведения', 'Pasta': 'Паста', 'Comfort food': 'Домашняя еда',
+    'Fill in the highlighted fields': 'Заполните отмеченные поля',
+    'You can stop deciding': 'Можно больше не выбирать.'
   };
   var translateText = function(value, language) {
     if (typeof value !== 'string') return value;
@@ -121,7 +129,9 @@ const ComponentFunction = function() {
     var context = useTheme();
     return React.createElement(NativeTextInput, Object.assign({}, Object.assign({}, props, {
       placeholder: translateText(props.placeholder, context.language),
-      placeholderTextColor: props.placeholderTextColor || textSecondary
+      placeholderTextColor: props.placeholderTextColor || textSecondary,
+      keyboardAppearance: props.keyboardAppearance || 'dark',
+      underlineColorAndroid: 'transparent'
     }), { testID: 'NativeTextInput-1' }));
   };
   // @end:ThemeContext
@@ -240,6 +250,150 @@ const ComponentFunction = function() {
   };
   // @end:shared-components
 
+  var FOOD_TAGS = ['Fish', 'Chicken', 'Beef', 'Veal'];
+  var PLACE_TAGS = ['Restaurant', 'Cafe'];
+  var SEARCH_PAIRS = [
+    ['salmon', 'лосос'], ['steak', 'стейк'], ['vegetable', 'овощ'], ['pasta', 'паста'],
+    ['carbonara', 'карбонар'], ['siberian', 'сибирск'], ['pelmeni', 'пельмен'],
+    ['chicken', 'куриц'], ['beef', 'говядин'], ['veal', 'телятин'], ['fish', 'рыб'],
+    ['cafe', 'кафе'], ['restaurant', 'ресторан'], ['spaghetti', 'спагетти'], ['bacon', 'бекон']
+  ];
+  var foldSearch = function(value) { return String(value || '').toLowerCase().replace(/ё/g, 'е').trim(); };
+  var expandSearch = function(text) {
+    var base = foldSearch(text);
+    var extra = [base];
+    SEARCH_PAIRS.forEach(function(pair) {
+      if (base.indexOf(pair[0]) >= 0) extra.push(pair[1]);
+      if (base.indexOf(pair[1]) >= 0) extra.push(pair[0]);
+    });
+    return extra.join(' ');
+  };
+  var matchesQuery = function(query, text) {
+    var needle = foldSearch(query);
+    if (!needle) return true;
+    var haystack = expandSearch(text);
+    if (haystack.indexOf(needle) >= 0) return true;
+    return expandSearch(needle).split(' ').some(function(part) { return part && haystack.indexOf(part) >= 0; });
+  };
+  var collectPhotoUris = function(result) {
+    var list = [];
+    var push = function(value) {
+      if (!value) return;
+      if (typeof value === 'string') list.push(value);
+      else if (value.uri) list.push(value.uri);
+    };
+    if (!result) return [];
+    if (Array.isArray(result)) result.forEach(push);
+    else {
+      push(result);
+      ['assets', 'images', 'uris', 'photos'].forEach(function(key) {
+        if (Array.isArray(result[key])) result[key].forEach(push);
+      });
+    }
+    var unique = [];
+    list.forEach(function(uri) { if (unique.indexOf(uri) < 0) unique.push(uri); });
+    return unique.slice(0, 10);
+  };
+  var pickGalleryPhotos = function(camera) {
+    var options = { allowsMultipleSelection: true, selectionLimit: 10, multiple: true, limit: 10, maxFiles: 10 };
+    var call = function(method, args) {
+      try {
+        var pending = method.apply(camera, args);
+        return pending && pending.then ? pending : Promise.resolve(pending);
+      } catch (err) { return Promise.reject(err); }
+    };
+    var method = camera && (camera.pickImages || camera.pickMultipleImages || camera.pickImage);
+    if (!method) return Promise.resolve([]);
+    return call(method, [options]).then(collectPhotoUris).catch(function() {
+      if (!camera.pickImage) return [];
+      if (method === camera.pickImage) return call(camera.pickImage, []).then(collectPhotoUris);
+      return call(camera.pickImage, [options]).then(collectPhotoUris).catch(function() { return call(camera.pickImage, []).then(collectPhotoUris); });
+    });
+  };
+  var collectDishIssues = function(name, price, ingredients, steps) {
+    var issues = {};
+    if (!String(name || '').trim()) issues.name = true;
+    if (!String(price || '').trim()) issues.price = true;
+    var rows = ingredients || [];
+    var complete = false;
+    var partial = false;
+    rows.forEach(function(item, index) {
+      var hasName = !!String(item && item.name || '').trim();
+      var hasAmount = !!String(item && item.amount || '').trim();
+      if (!hasName && !hasAmount) return;
+      partial = true;
+      if (!hasName) issues['ing-' + index + '-name'] = true;
+      if (!hasAmount) issues['ing-' + index + '-amount'] = true;
+      if (hasName && hasAmount) complete = true;
+    });
+    if (!complete && !partial) {
+      issues['ing-0-name'] = true;
+      issues['ing-0-amount'] = true;
+    }
+    var stepList = steps && steps.length ? steps : [{ text: '' }];
+    var stepOk = stepList.some(function(step) { return !!String(step && step.text || '').trim(); });
+    if (!stepOk) stepList.forEach(function(step, index) {
+      if (!String(step && step.text || '').trim()) issues['step-' + index] = true;
+    });
+    return issues;
+  };
+  var useInvalidFields = function() {
+    var invalidState = React.useState({});
+    var blinkState = React.useState(true);
+    var invalid = invalidState[0];
+    var setInvalid = invalidState[1];
+    var blink = blinkState[0];
+    var active = Object.keys(invalid).length > 0;
+    React.useEffect(function() {
+      if (!active) return undefined;
+      var timer = setInterval(function() { blinkState[1](function(value) { return !value; }); }, 480);
+      return function() { clearInterval(timer); };
+    }, [active]);
+    return {
+      setInvalid: setInvalid,
+      hot: function(key, empty) { return !!invalid[key] && !!empty && blink; }
+    };
+  };
+  var SwipeRow = function(props) {
+    var translate = React.useRef(new Animated.Value(0)).current;
+    var responder = React.useRef(PanResponder.create({
+      onMoveShouldSetPanResponder: function(_, gesture) { return gesture.dx < -10 && Math.abs(gesture.dx) > Math.abs(gesture.dy); },
+      onMoveShouldSetPanResponderCapture: function(_, gesture) { return gesture.dx < -10 && Math.abs(gesture.dx) > Math.abs(gesture.dy); },
+      onPanResponderMove: function(_, gesture) { translate.setValue(Math.min(0, Math.max(-96, gesture.dx))); },
+      onPanResponderRelease: function(_, gesture) {
+        Animated.spring(translate, { toValue: gesture.dx < -42 || gesture.vx < -0.45 ? -92 : 0, useNativeDriver: true, friction: 8, tension: 80 }).start();
+      },
+      onPanResponderTerminate: function() { Animated.spring(translate, { toValue: 0, useNativeDriver: true, friction: 8 }).start(); }
+    })).current;
+    return React.createElement(View, { style: styles.swipeShell },
+      React.createElement(TouchableOpacity, { style: styles.swipeDelete, onPress: props.onDelete },
+        React.createElement(Ionicons, { name: 'trash-outline', size: 18, color: '#FFFFFF' }),
+        React.createElement(Text, { style: styles.swipeDeleteText }, 'Удалить')),
+      React.createElement(Animated.View, Object.assign({ style: { transform: [{ translateX: translate }] } }, responder.panHandlers), props.children));
+  };
+  var TagGroup = function(props) {
+    return React.createElement(View, { style: { marginTop: 8 } },
+      React.createElement(Text, { style: styles.fieldLabel }, props.label),
+      props.hint ? React.createElement(Text, { style: styles.smallMuted }, props.hint) : null,
+      React.createElement(View, { style: styles.tagWrap },
+        props.tags.map(function(tag) {
+          var active = (props.selected || []).indexOf(tag) >= 0;
+          return React.createElement(TouchableOpacity, { key: tag, style: [styles.tagChip, active ? styles.tagChipActive : null], onPress: function() { props.onToggle(tag); } },
+            React.createElement(Text, { style: [styles.tagChipText, active ? styles.tagChipTextActive : null] }, tag));
+        })));
+  };
+  var renderTagGroups = function(selected, setSelected) {
+    var toggle = function(tag) {
+      setSelected(function(prev) {
+        var list = prev || [];
+        if (list.indexOf(tag) >= 0) return list.filter(function(item) { return item !== tag; });
+        return list.concat([tag]);
+      });
+    };
+    return React.createElement(View, null,
+      React.createElement(TagGroup, { label: 'Категории', hint: 'Ресторан или кафе', tags: PLACE_TAGS, selected: selected, onToggle: toggle }),
+      React.createElement(TagGroup, { label: 'Теги', hint: 'Рыба, мясо и другое', tags: FOOD_TAGS, selected: selected, onToggle: toggle }));
+  };
   // @section:HomeScreen @depends:[ThemeContext,shared-components,styles]
   var HomeScreen = function(props) {
     var insets = useSafeAreaInsets();
@@ -320,7 +474,28 @@ const ComponentFunction = function() {
       }, 95);
     };
 
-    var availableTags = ['Fish', 'Chicken', 'Beef', 'Veal', 'Restaurant', 'Cafe'];
+    var cycleFilter = function(tag) {
+      filterStore[1](function(prev) {
+        var copy = Object.assign({}, prev);
+        if (!copy[tag]) copy[tag] = 'include';
+        else if (copy[tag] === 'include') copy[tag] = 'exclude';
+        else delete copy[tag];
+        return copy;
+      });
+    };
+    var renderFilterGroup = function(title, hint, tags) {
+      return React.createElement(View, { style: { marginTop: 18 } },
+        React.createElement(Text, { style: styles.sectionTitle }, title),
+        React.createElement(Text, { style: styles.smallMuted }, hint),
+        React.createElement(View, { style: styles.tagWrap },
+          tags.map(function(tag) {
+            var state = filterStates[tag];
+            var chipStyle = state === 'include' ? styles.tagChipActive : state === 'exclude' ? styles.tagChipExclude : null;
+            var textStyle = state === 'include' ? styles.tagChipTextActive : state === 'exclude' ? styles.tagChipTextExclude : null;
+            return React.createElement(TouchableOpacity, { key: tag, style: [styles.tagChip, chipStyle], onPress: function() { cycleFilter(tag); } },
+              React.createElement(Text, { style: [styles.tagChipText, textStyle] }, tag));
+          })));
+    };
 
     return React.createElement(View, { testID: 'View-10', style: styles.screen, componentId: 'home-screen' },
       React.createElement(StatusBar, { testID: 'StatusBar-1', backgroundColor: backgroundColor, barStyle: 'light-content' }),
@@ -360,30 +535,16 @@ const ComponentFunction = function() {
               React.createElement(PrimaryButton, { testID: 'PrimaryButton-2', id: 'home-spin', icon: 'dice-outline', label: spinning ? 'SPINNING…' : 'SPIN DISH', onPress: spin, disabled: spinning })) : null
           )),
 
-      // Модальное окно фильтрации
       React.createElement(Modal, { visible: filterModal, transparent: true, animationType: 'fade', onRequestClose: function() { setFilterModal(false); } },
-        React.createElement(View, { style: styles.modalBackdrop },
-          React.createElement(View, { style: styles.unitModalContent },
-            React.createElement(Text, { style: styles.sectionTitle }, 'Фильтр блюд'),
-            React.createElement(Text, { style: styles.smallMuted }, 'Нажмите 1 раз — выбрать. Нажмите 2 раза — исключить.'),
-            availableTags.map(function(tag) {
-              var st = filterStates[tag];
-              var iconName = st === 'include' ? 'checkmark-circle' : st === 'exclude' ? 'close-circle' : 'ellipse-outline';
-              var iconColor = st === 'include' ? '#7DCEA0' : st === 'exclude' ? '#E25B52' : textSecondary;
-              return React.createElement(TouchableOpacity, { key: tag, style: styles.filterRowItem, onPress: function() {
-                filterStore[1](function(prev) {
-                  var copy = Object.assign({}, prev);
-                  if (!copy[tag]) copy[tag] = 'include';
-                  else if (copy[tag] === 'include') copy[tag] = 'exclude';
-                  else delete copy[tag];
-                  return copy;
-                });
-              } },
-                React.createElement(Text, { style: [styles.medium, st === 'exclude' ? { textDecorationLine: 'line-through', color: textSecondary } : null] }, tag),
-                React.createElement(Ionicons, { name: iconName, size: 22, color: iconColor })
-              );
-            }),
-            React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginTop: 16 }], onPress: function() { setFilterModal(false); } },
+        React.createElement(View, { style: styles.sheetBackdrop },
+          React.createElement(TouchableOpacity, { style: { flex: 1 }, activeOpacity: 1, onPress: function() { setFilterModal(false); } }),
+          React.createElement(View, { style: styles.filterSheet },
+            React.createElement(View, { style: styles.sheetHandle }),
+            React.createElement(Text, { style: styles.sectionTitle }, 'Фильтр'),
+            React.createElement(Text, { style: styles.smallMuted }, 'Один раз — оставить в выборе. Второй — убрать. Третий — сбросить.'),
+            renderFilterGroup('Где', 'Ресторан или кафе', PLACE_TAGS),
+            renderFilterGroup('Блюдо', 'Рыба, мясо и другое', FOOD_TAGS),
+            React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginTop: 22 }], onPress: function() { setFilterModal(false); } },
               React.createElement(Text, { style: styles.primaryButtonText }, 'Готово'))
           )
         )
@@ -426,6 +587,9 @@ const ComponentFunction = function() {
     var query = useQuery('dishes');
     var context = useTheme();
     var camera = useCamera();
+    var removeDish = useMutation('dishes', 'delete');
+    var searchState = React.useState('');
+    var search = searchState[0], setSearch = searchState[1];
     var activeTabState = React.useState('recipes');
     var activeTab = activeTabState[0], setActiveTab = activeTabState[1];
 
@@ -463,11 +627,19 @@ const ComponentFunction = function() {
     var addPlacePhoto = function() {
       var append = function(uri) {
         if (!uri) return;
-        pPhotosState[1](function(prev) { return [].concat(prev || [], [uri]); });
+        pPhotosState[1](function(prev) {
+          var next = [].concat(prev || []);
+          if (next.length >= 10 || next.indexOf(uri) >= 0) return next;
+          next.push(uri);
+          return next;
+        });
       };
-      Alert.alert('Фото заведения', 'Можно добавить несколько: снаружи, зал, меню.', [
-        { text: 'Сделать фото', onPress: function() { camera.takePhoto().then(function(res) { append(res && res.uri); }).catch(function() {}); } },
-        { text: 'Выбрать из галереи', onPress: function() { camera.pickImage().then(function(res) { append(res && res.uri); }).catch(function() {}); } },
+      var appendMany = function(uris) {
+        (uris || []).forEach(append);
+      };
+      Alert.alert('Фото заведения', 'Из галереи можно выбрать сразу до 10 фото.', [
+        { text: 'Сделать фото', onPress: function() { camera.takePhoto().then(function(res) { appendMany(collectPhotoUris(res)); }).catch(function() {}); } },
+        { text: 'Выбрать из галереи', onPress: function() { pickGalleryPhotos(camera).then(appendMany).catch(function() {}); } },
         { text: 'Отмена', style: 'cancel' }
       ]);
     };
@@ -501,6 +673,28 @@ const ComponentFunction = function() {
         { text: 'Удалить', style: 'destructive', onPress: action }
       ]);
     };
+    var removePlaceAt = function(index) {
+      var action = function() { setPlaces(function(prev) { return (prev || []).filter(function(_, i) { return i !== index; }); }); };
+      if (Platform.OS === 'web') { if (window.confirm('Удалить это заведение?')) action(); }
+      else Alert.alert('Удалить заведение', 'Удалить это заведение из списка?', [
+        { text: 'Отмена', style: 'cancel' },
+        { text: 'Удалить', style: 'destructive', onPress: action }
+      ]);
+    };
+    var confirmRemoveDish = function(dishId) {
+      var action = function() { removeDish.mutate({ id: dishId }); };
+      if (Platform.OS === 'web') { if (window.confirm('Удалить это блюдо из меню?')) action(); }
+      else Alert.alert('Удалить блюдо', 'Удалить это блюдо из меню?', [
+        { text: 'Отмена', style: 'cancel' },
+        { text: 'Удалить', style: 'destructive', onPress: action }
+      ]);
+    };
+    var searchBar = function(onAdd) {
+      return React.createElement(View, { style: styles.searchRow },
+        React.createElement(TextInput, { style: styles.searchInput, value: search, onChangeText: setSearch, placeholder: 'Поиск по названию', autoCapitalize: 'none', autoCorrect: false }),
+        React.createElement(TouchableOpacity, { style: styles.searchAdd, onPress: onAdd, accessibilityLabel: 'Добавить' },
+          React.createElement(Ionicons, { name: 'add', size: 26, color: onAccentColor })));
+    };
 
     return React.createElement(View, { testID: 'View-MenuManager', style: [styles.screen, { paddingTop: insets.top }], componentId: 'menu-manager-screen' },
       React.createElement(StatusBar, { testID: 'StatusBar-MenuMgr', backgroundColor: backgroundColor, barStyle: 'light-content' }),
@@ -508,50 +702,56 @@ const ComponentFunction = function() {
         React.createElement(Header, { testID: 'Header-MenuMgr', id: 'menu-mgr', title: 'Recipes & Places', back: function() { props.navigation.goBack(); } }),
 
         React.createElement(View, { style: styles.topSubTabs },
-          React.createElement(TouchableOpacity, { style: [styles.subTabBtn, activeTab === 'recipes' ? styles.subTabBtnActive : null], onPress: function() { setActiveTab('recipes'); } },
+          React.createElement(TouchableOpacity, { style: [styles.subTabBtn, activeTab === 'recipes' ? styles.subTabBtnActive : null], onPress: function() { setActiveTab('recipes'); setSearch(''); } },
             React.createElement(Text, { style: [styles.medium, activeTab === 'recipes' ? { color: onAccentColor } : null] }, 'Рецепты')),
-          React.createElement(TouchableOpacity, { style: [styles.subTabBtn, activeTab === 'places' ? styles.subTabBtnActive : null], onPress: function() { setActiveTab('places'); } },
+          React.createElement(TouchableOpacity, { style: [styles.subTabBtn, activeTab === 'places' ? styles.subTabBtnActive : null], onPress: function() { setActiveTab('places'); setSearch(''); } },
             React.createElement(Text, { style: [styles.medium, activeTab === 'places' ? { color: onAccentColor } : null] }, 'Рестораны / Кафе'))
         ),
 
         activeTab === 'recipes' ? (
           React.createElement(View, { style: { flex: 1 } },
-            React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginVertical: 12 }], onPress: function() { props.navigation.navigate('DishEditor'); } },
-              React.createElement(Text, { style: styles.primaryButtonText }, '+ Добавить блюдо')),
-            !query.data.length ? React.createElement(View, { testID: 'View-MenuEmpty', style: styles.centerEmpty, componentId: 'menu-mgr-empty' },
+            searchBar(function() { props.navigation.navigate('DishEditor'); }),
+            !(query.data || []).length ? React.createElement(View, { testID: 'View-MenuEmpty', style: styles.centerEmpty, componentId: 'menu-mgr-empty' },
               React.createElement(Text, { testID: 'Text-EmptyTitle', style: styles.title }, 'Your dinner menu starts here'),
               React.createElement(Text, { style: styles.bodyMuted }, 'Add a dish to keep its price and recipe close at hand.')) :
             React.createElement(ScrollView, { testID: 'ScrollView-MenuMgr', style: styles.flexScroll, contentContainerStyle: { paddingBottom: insets.bottom + SCROLL_EXTRA_PADDING }, componentId: 'menu-mgr-list' },
-              query.data.map(function(dish, index) {
+              (query.data || []).filter(function(dish) { return matchesQuery(search, dish && dish.dish_name); }).length ? null :
+                React.createElement(Text, { style: [styles.bodyMuted, { textAlign: 'center', marginTop: 24 }] }, 'Ничего не найдено'),
+              (query.data || []).map(function(dish, index) {
+                if (!matchesQuery(search, dish && dish.dish_name)) return null;
                 var details = dishDetails(dish);
-                return React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-MenuRow', key: String(dish?.id || index), style: styles.menuRow, onPress: function() { props.navigation.navigate('DishDetail', { dishId: dish?.id }); }, componentId: 'menu-mgr-item-' + index },
-                  React.createElement(DishImage, { testID: 'DishImage-MenuMgr', dish: dish, style: styles.menuImage, componentId: 'menu-mgr-image-' + index }),
-                  React.createElement(View, { testID: 'View-MenuInfo', style: styles.menuInfo, componentId: 'menu-mgr-info-' + index },
-                    React.createElement(Text, { testID: 'Text-MenuName', style: styles.medium }, dish?.dish_name || 'Untitled dish'),
-                    React.createElement(Text, { testID: 'Text-MenuPrice', style: styles.medium }, formatPrice(dish?.price_rubles)),
-                    React.createElement(Text, { testID: 'Text-MenuKind', style: styles.smallMuted }, context.translate(details.kind) + ' · ' + details.minutes + ' ' + context.translate('min'))));
+                return React.createElement(SwipeRow, { key: String(dish?.id || index), onDelete: function() { confirmRemoveDish(dish?.id); } },
+                  React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-MenuRow', style: [styles.menuRow, { marginBottom: 0 }], onPress: function() { props.navigation.navigate('DishDetail', { dishId: dish?.id }); }, componentId: 'menu-mgr-item-' + index },
+                    React.createElement(DishImage, { testID: 'DishImage-MenuMgr', dish: dish, style: styles.menuImage, componentId: 'menu-mgr-image-' + index }),
+                    React.createElement(View, { testID: 'View-MenuInfo', style: styles.menuInfo, componentId: 'menu-mgr-info-' + index },
+                      React.createElement(Text, { testID: 'Text-MenuName', style: styles.medium }, dish?.dish_name || 'Untitled dish'),
+                      React.createElement(Text, { testID: 'Text-MenuPrice', style: styles.medium }, formatPrice(dish?.price_rubles)),
+                      React.createElement(Text, { testID: 'Text-MenuKind', style: styles.smallMuted }, context.translate(details.kind) + ' · ' + details.minutes + ' ' + context.translate('min')))));
               }))
           )
         ) : (
           React.createElement(View, { style: { flex: 1 } },
-            React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginVertical: 12 }], onPress: function() { openPlaceEditor(null); } },
-              React.createElement(Text, { style: styles.primaryButtonText }, '+ Добавить заведение')),
+            searchBar(function() { openPlaceEditor(null); }),
             !places.length ? React.createElement(View, { style: styles.centerEmpty },
               React.createElement(Text, { style: styles.title }, 'Нет добавленных кафе или ресторанов')) :
               React.createElement(ScrollView, { style: styles.flexScroll, contentContainerStyle: { paddingBottom: insets.bottom + SCROLL_EXTRA_PADDING } },
+                places.some(function(place) { return matchesQuery(search, place && place.name); }) ? null :
+                  React.createElement(Text, { style: [styles.bodyMuted, { textAlign: 'center', marginTop: 24 }] }, 'Ничего не найдено'),
                 places.map(function(place, idx) {
+                  if (!matchesQuery(search, place && place.name)) return null;
                   var photos = placePhotos(place);
                   var photoNote = photos.length > 1 ? photos.length + ' фото' : '';
                   var placeMeta = [place.desc, photoNote].filter(Boolean).join(' · ');
-                  return React.createElement(TouchableOpacity, { key: idx, style: styles.menuRow, onPress: function() { openPlaceEditor(idx); } },
-                    photos[0] ? React.createElement(Image, { source: { uri: photos[0] }, style: styles.menuImage, resizeMode: 'cover' }) :
-                      React.createElement(View, { style: [styles.menuImage, styles.imageFallback] }, React.createElement(Ionicons, { name: 'restaurant-outline', size: 24, color: textSecondary })),
-                    React.createElement(View, { style: styles.menuInfo },
-                      React.createElement(Text, { style: styles.medium }, place.name),
-                      React.createElement(Text, { style: styles.smallMuted }, place.address),
-                      placeMeta ? React.createElement(Text, { style: styles.smallMuted }, placeMeta) : null
-                    )
-                  );
+                  return React.createElement(SwipeRow, { key: idx, onDelete: function() { removePlaceAt(idx); } },
+                    React.createElement(TouchableOpacity, { style: [styles.menuRow, { marginBottom: 0 }], onPress: function() { openPlaceEditor(idx); } },
+                      photos[0] ? React.createElement(Image, { source: { uri: photos[0] }, style: styles.menuImage, resizeMode: 'cover' }) :
+                        React.createElement(View, { style: [styles.menuImage, styles.imageFallback] }, React.createElement(Ionicons, { name: 'restaurant-outline', size: 24, color: textSecondary })),
+                      React.createElement(View, { style: styles.menuInfo },
+                        React.createElement(Text, { style: styles.medium }, place.name),
+                        React.createElement(Text, { style: styles.smallMuted }, place.address),
+                        placeMeta ? React.createElement(Text, { style: styles.smallMuted }, placeMeta) : null
+                      )
+                    ));
                 })
               )
           )
@@ -566,7 +766,7 @@ const ComponentFunction = function() {
                 React.createElement(TextInput, { style: [styles.input, { width: '100%', marginBottom: 8 }], placeholder: 'Адрес', value: pAddressState[0], onChangeText: pAddressState[1] }),
                 React.createElement(TextInput, { style: [styles.textArea, { width: '100%', marginBottom: 8, minHeight: 80 }], placeholder: 'Прайс, описание...', value: pDescState[0], onChangeText: pDescState[1], multiline: true }),
                 React.createElement(Text, { style: styles.fieldLabel }, 'Фотографии'),
-                React.createElement(Text, { style: styles.smallMuted }, 'Снаружи, зал или меню — добавьте сколько нужно.'),
+                React.createElement(Text, { style: styles.smallMuted }, 'Из галереи можно выбрать сразу до 10 фото.'),
                 React.createElement(View, { style: styles.placePhotoRow },
                   placePhotosNow.map(function(uri, photoIndex) {
                     return React.createElement(View, { key: String(photoIndex), style: styles.placePhotoTile },
@@ -641,11 +841,26 @@ const ComponentFunction = function() {
     var revealRef = React.useRef(null);
     if (!revealRef.current) revealRef.current = new Animated.Value(0);
     var reveal = revealRef.current;
+    var sparkRef = React.useRef(null);
+    if (!sparkRef.current) {
+      sparkRef.current = [];
+      for (var sparkIndex = 0; sparkIndex < 14; sparkIndex += 1) sparkRef.current.push(new Animated.Value(0));
+    }
+    var sparks = sparkRef.current;
     React.useEffect(function() {
       reveal.setValue(0);
       var drop = Animated.spring(reveal, { toValue: 1, friction: 7, tension: 58, useNativeDriver: Platform.OS !== 'web' });
       drop.start();
-      return function() { drop.stop(); };
+      var bursts = sparks.map(function(value, index) {
+        value.setValue(0);
+        var burst = Animated.timing(value, { toValue: 1, duration: 980, delay: 120 + index * 18, useNativeDriver: Platform.OS !== 'web' });
+        burst.start();
+        return burst;
+      });
+      return function() {
+        drop.stop();
+        bursts.forEach(function(burst) { burst.stop(); });
+      };
     }, [params.dishId]);
     var revealStyle = {
       width: '100%',
@@ -661,13 +876,33 @@ const ComponentFunction = function() {
       React.createElement(StatusBar, { testID: 'StatusBar-Result', backgroundColor: backgroundColor, barStyle: 'light-content' }),
       React.createElement(View, { testID: 'View-29', style: styles.stackContent, componentId: 'result-content-wrap' },
         React.createElement(Header, { testID: 'Header-4', id: 'result', title: 'Congratulations!', back: function() { props.navigation.goBack(); } }),
-        dish ? React.createElement(View, { testID: 'View-30', style: styles.resultCenter, componentId: 'result-content' },
+        dish ? React.createElement(View, { testID: 'View-30', style: [styles.resultCenter, { justifyContent: 'flex-start', paddingTop: 18 }], componentId: 'result-content' },
           React.createElement(Animated.View, { style: revealStyle },
             React.createElement(View, { style: styles.resultReveal },
               React.createElement(Text, { testID: 'Text-28', style: styles.celebration, componentId: 'result-overline' }, 'Tonight’s pick'),
-              React.createElement(DishImage, { testID: 'DishImage-4', dish: dish, style: styles.resultImage, componentId: 'result-image' }),
-              React.createElement(Text, { testID: 'Text-29', style: styles.title, componentId: 'result-name' }, dish.dish_name || 'Dinner'),
-              React.createElement(Text, { testID: 'Test-30', style: styles.bodyMuted, componentId: 'result-price' }, formatPrice(dish.price_rubles) + ' ' + context.translate('estimated total')))),
+              React.createElement(View, { style: styles.sparkStage },
+                React.createElement(View, { style: styles.resultGlow }),
+                React.createElement(DishImage, { testID: 'DishImage-4', dish: dish, style: styles.resultImage, componentId: 'result-image' }),
+                sparks.map(function(value, index) {
+                  var angle = (Math.PI * 2 * index) / sparks.length;
+                  var distance = 78 + (index % 3) * 22;
+                  return React.createElement(Animated.View, { key: 'spark-' + index, pointerEvents: 'none', style: {
+                    position: 'absolute', left: '50%', top: '46%', width: index % 2 ? 8 : 5, height: index % 2 ? 8 : 5, borderRadius: 6, marginLeft: -4,
+                    backgroundColor: index % 3 === 0 ? '#F6C177' : index % 3 === 1 ? accentColor : '#F4E6D4',
+                    opacity: value.interpolate({ inputRange: [0, 0.12, 1], outputRange: [0, 1, 0] }),
+                    transform: [
+                      { translateX: value.interpolate({ inputRange: [0, 1], outputRange: [0, Math.cos(angle) * distance] }) },
+                      { translateY: value.interpolate({ inputRange: [0, 1], outputRange: [0, Math.sin(angle) * distance] }) },
+                      { scale: value.interpolate({ inputRange: [0, 0.25, 1], outputRange: [0.2, 1.15, 0.3] }) }
+                    ]
+                  } });
+                })),
+              React.createElement(Text, { testID: 'Text-29', style: [styles.title, { textAlign: 'center' }], componentId: 'result-name' }, dish.dish_name || 'Dinner'),
+              React.createElement(View, { style: styles.resultChips },
+                React.createElement(View, { style: styles.tagChip }, React.createElement(Text, { style: styles.tagChipText }, dishDetails(dish).minutes + ' ' + context.translate('min'))),
+                React.createElement(View, { style: styles.tagChip }, React.createElement(Text, { style: styles.tagChipText }, context.translate(dishDetails(dish).kind)))),
+              React.createElement(Text, { testID: 'Test-30', style: styles.bodyMuted, componentId: 'result-price' }, formatPrice(dish.price_rubles) + ' ' + context.translate('estimated total')),
+              React.createElement(Text, { style: styles.cheerLine }, 'You can stop deciding'))),
           React.createElement(PrimaryButton, { testID: 'PrimaryButton-4', id: 'result-view-recipe', label: 'View Recipe', onPress: goRecipe }),
           React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-10', style: styles.againButton, onPress: function() { props.navigation.goBack(); }, componentId: 'result-again' },
             React.createElement(Text, { testID: 'Text-31', style: styles.bodyMuted, componentId: 'result-again-label' }, 'No, I want something else'))) :
@@ -726,6 +961,7 @@ const ComponentFunction = function() {
     var insets = useSafeAreaInsets();
     var context = useTheme();
     var camera = useCamera();
+    var fields = useInvalidFields();
     
     var nameState = React.useState('');
     var priceState = React.useState('');
@@ -734,7 +970,6 @@ const ComponentFunction = function() {
     
     var tagsState = React.useState([]);
     var selectedTags = tagsState[0], setSelectedTags = tagsState[1];
-    var availableTags = ['Fish', 'Chicken', 'Beef', 'Veal', 'Restaurant', 'Cafe'];
 
     var errorState = React.useState('');
     
@@ -805,9 +1040,11 @@ const ComponentFunction = function() {
     };
 
     var save = function() {
+      var issues = collectDishIssues(name, price, ingredients, steps);
+      if (Object.keys(issues).length) { fields.setInvalid(issues); setError('Fill in the highlighted fields'); return; }
+      fields.setInvalid({});
       var serializedIngredients = serializeStructuredIngredients(ingredients);
       var serializedSteps = serializeStructuredSteps(steps);
-      if (!name.trim() || !price || !serializedIngredients || !serializedSteps) { setError('Please fill in the dish name, price, ingredients and recipe.'); return; }
       setError('');
       insert.mutate({ dish_name: name.trim(), price_rubles: Number(price), ingredients: serializedIngredients, recipe_steps: serializedSteps, photo_uri: photoUri, tags: selectedTags }).then(function() {
         props.navigation.goBack();
@@ -827,17 +1064,17 @@ const ComponentFunction = function() {
             React.createElement(Text, { testID: 'Text-43', style: styles.medium, componentId: 'dish-editor-photo-title' }, 'Dish photo'),
             React.createElement(Text, { testID: 'Text-44', style: styles.smallMuted, componentId: 'dish-editor-photo-hint' }, photoUri ? 'Photo added' : 'Add a photo of the finished dish'))),
         React.createElement(Text, { testID: 'Text-45', style: styles.fieldLabel, componentId: 'dish-editor-name-label' }, 'Dish name'),
-        React.createElement(TextInput, { testID: 'TextInput-1', style: styles.input, value: name, onChangeText: setName, placeholder: 'Dish name', autoCapitalize: 'words', componentId: 'dish-editor-name' }),
+        React.createElement(TextInput, { testID: 'TextInput-1', style: [styles.input, fields.hot('name', !String(name || '').trim()) ? styles.invalidField : null], value: name, onChangeText: setName, placeholder: 'Dish name', autoCapitalize: 'words', componentId: 'dish-editor-name' }),
         React.createElement(Text, { testID: 'Text-46', style: styles.fieldLabel, componentId: 'dish-editor-price-label' }, 'Price'),
-        React.createElement(TextInput, { testID: 'TextInput-2', style: styles.input, value: price, onChangeText: function(value) { setPrice(value.replace(/[^0-9]/g, '')); }, keyboardType: 'numeric', placeholder: '0', componentId: 'dish-editor-price' }),
+        React.createElement(TextInput, { testID: 'TextInput-2', style: [styles.input, fields.hot('price', !String(price || '').trim()) ? styles.invalidField : null], value: price, onChangeText: function(value) { setPrice(value.replace(/[^0-9]/g, '')); }, keyboardType: 'numeric', placeholder: '0', componentId: 'dish-editor-price' }),
         
         React.createElement(Text, { testID: 'Text-47', style: styles.fieldLabel, componentId: 'dish-editor-ingredients-label' }, 'Ingredients'),
         ingredients.map(function(item, index) {
           return React.createElement(View, { key: index, style: styles.ingredientRowBuilder },
-            React.createElement(TextInput, { style: [styles.input, styles.ingNameInput], value: item.name, placeholder: 'Ingredient name', onChangeText: function(val) {
+            React.createElement(TextInput, { style: [styles.input, styles.ingNameInput, fields.hot('ing-' + index + '-name', !String(item.name || '').trim()) ? styles.invalidField : null], value: item.name, placeholder: 'Ingredient name', onChangeText: function(val) {
               setIngredients(function(prev) { var copy = [].concat(prev); copy[index] = Object.assign({}, copy[index], { name: val }); return copy; });
             } }),
-            React.createElement(TextInput, { style: [styles.input, styles.ingAmountInput], value: item.amount, placeholder: '0', keyboardType: 'numeric', onChangeText: function(val) {
+            React.createElement(TextInput, { style: [styles.input, styles.ingAmountInput, fields.hot('ing-' + index + '-amount', !String(item.amount || '').trim()) ? styles.invalidField : null], value: item.amount, placeholder: '0', keyboardType: 'numeric', onChangeText: function(val) {
               setIngredients(function(prev) { var copy = [].concat(prev); copy[index] = Object.assign({}, copy[index], { amount: val.replace(/[^0-9.]/g, '') }); return copy; });
             } }),
             React.createElement(TouchableOpacity, { style: styles.unitPickerButton, onPress: function() {
@@ -854,7 +1091,7 @@ const ComponentFunction = function() {
         React.createElement(Text, { testID: 'Text-48', style: styles.fieldLabel, componentId: 'dish-editor-steps-label' }, 'Recipe steps'),
         steps.map(function(stepObj, index) {
           return React.createElement(View, { key: index, style: styles.stepBuilderRow },
-            React.createElement(TextInput, { style: [styles.input, styles.stepInputText], value: stepObj.text, placeholder: 'Step description...', multiline: true, onChangeText: function(val) {
+            React.createElement(TextInput, { style: [styles.input, styles.stepInputText, fields.hot('step-' + index, !String(stepObj.text || '').trim()) ? styles.invalidField : null], value: stepObj.text, placeholder: 'Step description...', multiline: true, onChangeText: function(val) {
               setSteps(function(prev) { var copy = [].concat(prev); copy[index] = Object.assign({}, copy[index], { text: val }); return copy; });
             } }),
             React.createElement(TouchableOpacity, { style: [styles.stepPhotoSmallBtn, stepObj.photo ? styles.stepPhotoSmallBtnDone : null], onPress: function() { chooseStepPhoto(index); } },
@@ -866,19 +1103,7 @@ const ComponentFunction = function() {
           setSteps(function(prev) { return prev.concat([{ text: '', photo: '' }]); });
         } }, React.createElement(Text, { style: styles.link }, '+ Добавить шаг')),
 
-        React.createElement(Text, { style: styles.fieldLabel }, 'Категории / Теги'),
-        React.createElement(View, { style: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 } },
-          availableTags.map(function(t) {
-            var active = selectedTags.includes(t);
-            return React.createElement(TouchableOpacity, { key: t, style: [styles.tagChip, active ? styles.tagChipActive : null], onPress: function() {
-              setSelectedTags(function(prev) {
-                if (prev.includes(t)) return prev.filter(function(x) { return x !== t; });
-                return prev.concat([t]);
-              });
-            } },
-              React.createElement(Text, { style: [styles.tagChipText, active ? styles.tagChipTextActive : null] }, t));
-          })
-        )
+        renderTagGroups(selectedTags, setSelectedTags)
       ),
       
       React.createElement(Modal, { visible: dishPhotoModal, transparent: true, animationType: 'fade', onRequestClose: function() { setDishPhotoModal(false); } },
@@ -985,6 +1210,7 @@ const ComponentFunction = function() {
     var remove = useMutation('dishes', 'delete');
     var context = useTheme();
     var camera = useCamera();
+    var fields = useInvalidFields();
 
     var dishId = props.route?.params?.dishId;
     var dish = query.data.find(function(row) { return row?.id === dishId; }) || null;
@@ -995,7 +1221,6 @@ const ComponentFunction = function() {
     
     var tagsState = React.useState(dish?.tags || []);
     var selectedTags = tagsState[0], setSelectedTags = tagsState[1];
-    var availableTags = ['Fish', 'Chicken', 'Beef', 'Veal', 'Restaurant', 'Cafe'];
 
     var errorState = React.useState('');
 
@@ -1068,8 +1293,12 @@ const ComponentFunction = function() {
     };
 
     var save = function() {
+      var issues = collectDishIssues(name, price, ingredients, steps);
+      if (Object.keys(issues).length) { fields.setInvalid(issues); setError('Fill in the highlighted fields'); return; }
+      fields.setInvalid({});
       var serializedIngredients = serializeStructuredIngredients(ingredients);
       var serializedSteps = serializeStructuredSteps(steps);
+      setError('');
       update.mutate({ id: dishId, data: { dish_name: name.trim(), price_rubles: Number(price), ingredients: serializedIngredients, recipe_steps: serializedSteps, photo_uri: photoUri, tags: selectedTags } }).then(function() {
         props.navigation.goBack();
       }, function() { setError('Changes couldn’t be saved. Your dish details are still here.'); });
@@ -1096,17 +1325,17 @@ const ComponentFunction = function() {
               React.createElement(Text, { testID: 'Text-44-detail', style: styles.smallMuted, componentId: 'dish-detail-photo-hint' }, photoUri ? 'Photo added' : 'Add a photo of the finished dish'))),
 
           React.createElement(Text, { testID: 'Text-50', style: styles.fieldLabel, componentId: 'dish-detail-name-label' }, 'Dish name'),
-          React.createElement(TextInput, { testID: 'TextInput-5', style: styles.input, value: name, onChangeText: setName, componentId: 'dish-detail-name' }),
+          React.createElement(TextInput, { testID: 'TextInput-5', style: [styles.input, fields.hot('name', !String(name || '').trim()) ? styles.invalidField : null], value: name, onChangeText: setName, componentId: 'dish-detail-name' }),
           React.createElement(Text, { testID: 'Text-51', style: styles.fieldLabel, componentId: 'dish-detail-price-label' }, 'Price'),
-          React.createElement(TextInput, { testID: 'TextInput-6', style: styles.input, value: price, onChangeText: setPrice, keyboardType: 'numeric', componentId: 'dish-detail-price' }),
+          React.createElement(TextInput, { testID: 'TextInput-6', style: [styles.input, fields.hot('price', !String(price || '').trim()) ? styles.invalidField : null], value: price, onChangeText: setPrice, keyboardType: 'numeric', componentId: 'dish-detail-price' }),
           
           React.createElement(Text, { testID: 'Text-52', style: styles.fieldLabel, componentId: 'dish-detail-ingredients-label' }, 'Ingredients'),
           ingredients.map(function(item, index) {
             return React.createElement(View, { key: index, style: styles.ingredientRowBuilder },
-              React.createElement(TextInput, { style: [styles.input, styles.ingNameInput], value: item.name, placeholder: 'Ingredient name', onChangeText: function(val) {
+              React.createElement(TextInput, { style: [styles.input, styles.ingNameInput, fields.hot('ing-' + index + '-name', !String(item.name || '').trim()) ? styles.invalidField : null], value: item.name, placeholder: 'Ingredient name', onChangeText: function(val) {
                 setIngredients(function(prev) { var copy = [].concat(prev); copy[index] = Object.assign({}, copy[index], { name: val }); return copy; });
               } }),
-              React.createElement(TextInput, { style: [styles.input, styles.ingAmountInput], value: item.amount, placeholder: '0', keyboardType: 'numeric', onChangeText: function(val) {
+              React.createElement(TextInput, { style: [styles.input, styles.ingAmountInput, fields.hot('ing-' + index + '-amount', !String(item.amount || '').trim()) ? styles.invalidField : null], value: item.amount, placeholder: '0', keyboardType: 'numeric', onChangeText: function(val) {
                 setIngredients(function(prev) { var copy = [].concat(prev); copy[index] = Object.assign({}, copy[index], { amount: val.replace(/[^0-9.]/g, '') }); return copy; });
               } }),
               React.createElement(TouchableOpacity, { style: styles.unitPickerButton, onPress: function() {
@@ -1124,7 +1353,7 @@ const ComponentFunction = function() {
           steps.map(function(stepObj, index) {
             var hasPhoto = Boolean(stepObj.photo);
             return React.createElement(View, { key: index, style: styles.stepBuilderRow },
-              React.createElement(TextInput, { style: [styles.input, styles.stepInputText], value: stepObj.text, placeholder: 'Step description...', multiline: true, onChangeText: function(val) {
+              React.createElement(TextInput, { style: [styles.input, styles.stepInputText, fields.hot('step-' + index, !String(stepObj.text || '').trim()) ? styles.invalidField : null], value: stepObj.text, placeholder: 'Step description...', multiline: true, onChangeText: function(val) {
                 setSteps(function(prev) { var copy = [].concat(prev); copy[index] = Object.assign({}, copy[index], { text: val }); return copy; });
               } }),
               React.createElement(TouchableOpacity, { style: [styles.stepPhotoSmallBtn, hasPhoto ? styles.stepPhotoSmallBtnDone : null], onPress: function() { chooseStepPhoto(index); } },
@@ -1136,19 +1365,7 @@ const ComponentFunction = function() {
             setSteps(function(prev) { return prev.concat([{ text: '', photo: '' }]); });
           } }, React.createElement(Text, { style: styles.link }, '+ Добавить шаг')),
 
-          React.createElement(Text, { style: styles.fieldLabel }, 'Категории / Теги'),
-          React.createElement(View, { style: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 } },
-            availableTags.map(function(t) {
-              var active = selectedTags.includes(t);
-              return React.createElement(TouchableOpacity, { key: t, style: [styles.tagChip, active ? styles.tagChipActive : null], onPress: function() {
-                setSelectedTags(function(prev) {
-                  if (prev.includes(t)) return prev.filter(function(x) { return x !== t; });
-                  return prev.concat([t]);
-                });
-              } },
-                React.createElement(Text, { style: [styles.tagChipText, active ? styles.tagChipTextActive : null] }, t));
-            })
-          ),
+          renderTagGroups(selectedTags, setSelectedTags),
 
           React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-12', style: styles.deleteRow, onPress: confirmDelete, componentId: 'dish-detail-delete' },
             React.createElement(Ionicons, { testID: 'Ionicons-9', name: 'trash-outline', size: 22, color: accentColor }),
@@ -1339,7 +1556,7 @@ const ComponentFunction = function() {
     recipeCard: { minHeight: 108, borderRadius: radiusMd, backgroundColor: cardColor, flexDirection: 'row', marginBottom: 10, borderWidth: 1, borderColor: borderColor, overflow: 'hidden' },
     recipeListImage: { width: 96, height: 108, borderTopLeftRadius: radiusMd, borderBottomLeftRadius: radiusMd, backgroundColor: surfaceAltColor },
     recipeListCopy: { flex: 1, minWidth: 0, paddingHorizontal: 14, paddingVertical: 12, justifyContent: 'center', gap: 5 },
-    resultCenter: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14, padding: 8 },
+    resultCenter: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14, padding: 8, paddingBottom: 56 },
     resultReveal: { width: '100%', alignItems: 'center', gap: 14 },
     placeModalCard: { width: '92%', maxWidth: 420, maxHeight: '88%', backgroundColor: cardColor, borderRadius: radiusMd, padding: 18, borderWidth: 1, borderColor: borderColor },
     placeModalScroll: { width: '100%', maxHeight: 380 },
@@ -1400,7 +1617,24 @@ const ComponentFunction = function() {
     tagChip: { paddingHorizontal: 12, height: 32, borderRadius: radiusPill, backgroundColor: surfaceAltColor, borderWidth: 1, borderColor: borderColor, justifyContent: 'center', alignItems: 'center' },
     tagChipActive: { backgroundColor: accentColor, borderColor: accentColor },
     tagChipText: { color: textSecondary, fontSize: 13, fontWeight: '600' },
-    tagChipTextActive: { color: onAccentColor }
+    tagChipTextActive: { color: onAccentColor },
+    tagChipExclude: { backgroundColor: '#3A221F', borderColor: '#E25B52' },
+    tagChipTextExclude: { color: '#E7B2AD', textDecorationLine: 'line-through' },
+    tagWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 },
+    invalidField: { borderColor: '#E25B52', borderWidth: 1.5 },
+    searchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12, marginBottom: 12 },
+    searchInput: { flex: 1, minHeight: 48, borderRadius: radiusPill, backgroundColor: cardColor, borderWidth: 1, borderColor: borderColor, paddingHorizontal: 16, color: textPrimary, fontSize: 15 },
+    searchAdd: { width: 48, height: 48, borderRadius: 24, backgroundColor: accentColor, alignItems: 'center', justifyContent: 'center' },
+    swipeShell: { marginBottom: 10, borderRadius: radiusMd, overflow: 'hidden', backgroundColor: '#E25B52' },
+    swipeDelete: { position: 'absolute', right: 0, top: 0, bottom: 0, width: 92, alignItems: 'center', justifyContent: 'center', gap: 4 },
+    swipeDeleteText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
+    sheetBackdrop: { flex: 1, backgroundColor: 'rgba(8,7,6,0.72)', justifyContent: 'flex-end' },
+    filterSheet: { backgroundColor: cardColor, borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 20, paddingTop: 10, paddingBottom: 28, borderTopWidth: 1, borderColor: borderColor },
+    sheetHandle: { width: 42, height: 4, borderRadius: 2, backgroundColor: borderColor, alignSelf: 'center', marginBottom: 14 },
+    sparkStage: { width: '100%', minHeight: 230, alignItems: 'center', justifyContent: 'center' },
+    resultGlow: { position: 'absolute', width: 210, height: 210, borderRadius: 105, backgroundColor: 'rgba(255,92,56,0.16)' },
+    resultChips: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 8 },
+    cheerLine: { color: textPrimary, fontSize: 15, lineHeight: 21, textAlign: 'center' }
   });
   // @end:styles
 
@@ -1413,6 +1647,7 @@ const ComponentFunction = function() {
         screenOptions: {
           headerShown: false, hikariLiquidGlass: true, tabBarActiveTintColor: accentColor, tabBarInactiveTintColor: textSecondary,
           tabBarLabelStyle: { fontSize: 11, fontWeight: '600', letterSpacing: 0.2 },
+          sceneContainerStyle: { backgroundColor: backgroundColor },
           tabBarStyle: { position: 'absolute', bottom: 0, height: Platform.OS === 'web' ? TAB_MENU_HEIGHT : TAB_MENU_HEIGHT + insets.bottom, paddingBottom: 0, borderTopWidth: 1, borderTopColor: borderColor, backgroundColor: cardColor }
         }
       },
@@ -1423,7 +1658,7 @@ const ComponentFunction = function() {
 
   // @section:MainNavigator @depends:[TabNavigator,SpinResultScreen,RecipeDetailScreen,DishEditorScreen,DishDetailScreen,CameraScreen,MenuManagerScreen,HistoryScreen,navigation-setup]
   var MainNavigator = function() {
-    return React.createElement(Stack.Navigator, { testID: 'Navigator-2', initialRouteName: 'Main', screenOptions: { headerShown: false } },
+    return React.createElement(Stack.Navigator, { testID: 'Navigator-2', initialRouteName: 'Main', screenOptions: { headerShown: false, cardStyle: { backgroundColor: backgroundColor } } },
       React.createElement(Stack.Screen, { testID: 'Screen-4', name: 'Main', component: TabNavigator }),
       React.createElement(Stack.Screen, { testID: 'Screen-5', name: 'SpinResult', component: SpinResultScreen }),
       React.createElement(Stack.Screen, { testID: 'Screen-6', name: 'RecipeDetail', component: RecipeDetailScreen }),
