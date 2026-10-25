@@ -100,7 +100,12 @@ const ComponentFunction = function() {
     'Recipes & Places': 'Рецепты и заведения', 'Pasta': 'Паста', 'Comfort food': 'Домашняя еда',
     'Fill in the highlighted fields': 'Заполните отмеченные поля',
     'You can stop deciding': 'Можно больше не выбирать.',
-    'Search by name': 'Поиск по названию'
+    'Search by name': 'Поиск по названию',
+    'From outside': 'Извне',
+    'Add from outside': 'Добавить извне',
+    'Search recipes': 'Найти рецепт',
+    'Nothing in the catalog': 'В каталоге ничего не нашлось',
+    'Catalog is unavailable': 'Каталог рецептов сейчас недоступен'
   };
   var translateText = function(value, language) {
     if (typeof value !== 'string') return value;
@@ -269,6 +274,158 @@ const ComponentFunction = function() {
     if (n10 === 1 && n100 !== 11) return one;
     if (n10 >= 2 && n10 <= 4 && (n100 < 12 || n100 > 14)) return few;
     return many;
+  };
+  var decodeTranslated = function(value) {
+    return String(value || '')
+      .replace(/&#(\d+);/g, function(_, code) { return String.fromCharCode(Number(code)); })
+      .replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;|&apos;/g, "'");
+  };
+  var translateLines = function(lines, from, to) {
+    var clean = (lines || []).map(function(line) { return String(line || '').replace(/\s+/g, ' ').trim(); });
+    var batches = [];
+    var current = [];
+    var size = 0;
+    clean.forEach(function(line, index) {
+      var nextSize = size + line.length + 1;
+      if (current.length && nextSize > 420) {
+        batches.push(current);
+        current = [];
+        size = 0;
+      }
+      current.push({ index: index, text: line || ' ' });
+      size += line.length + 1;
+    });
+    if (current.length) batches.push(current);
+    var translated = clean.slice();
+    var chain = Promise.resolve();
+    batches.forEach(function(batch) {
+      chain = chain.then(function() {
+        var query = batch.map(function(item) { return item.text; }).join('\n');
+        var url = 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(query) + '&langpair=' + from + '|' + to;
+        return fetch(url).then(function(response) { return response.json(); }).then(function(data) {
+          var text = data && data.responseData && data.responseData.translatedText;
+          if (!text || /MYMEMORY WARNING|QUERY LENGTH LIMIT|INVALID LANGUAGE/i.test(text)) return;
+          var parts = decodeTranslated(text).split(/\n/);
+          batch.forEach(function(item, partIndex) {
+            var line = parts[partIndex] && String(parts[partIndex]).trim();
+            if (line && !/MYMEMORY WARNING/i.test(line)) translated[item.index] = line;
+          });
+        }).catch(function() {});
+      });
+    });
+    return chain.then(function() { return translated; });
+  };
+  var parseMeasure = function(measure) {
+    var fractions = { '¼': '1/4', '½': '1/2', '¾': '3/4', '⅓': '1/3', '⅔': '2/3', '⅛': '1/8' };
+    var raw = String(measure || '').trim();
+    Object.keys(fractions).forEach(function(mark) { raw = raw.split(mark).join(' ' + fractions[mark] + ' '); });
+    raw = raw.replace(/,/g, '.').replace(/\s+/g, ' ').trim();
+    if (!raw || /^to taste$/i.test(raw)) return { amount: '1', unit: 'шт.' };
+    var num = null;
+    var rest = raw;
+    var mixed = raw.match(/^(\d+(?:\.\d+)?)\s+(\d+)\/(\d+)/);
+    var fraction = raw.match(/^(\d+)\/(\d+)/);
+    var decimal = raw.match(/^(\d+(?:\.\d+)?)/);
+    if (mixed) {
+      num = parseFloat(mixed[1]) + (parseFloat(mixed[2]) / parseFloat(mixed[3]));
+      rest = raw.slice(mixed[0].length).trim();
+    } else if (fraction) {
+      num = parseFloat(fraction[1]) / parseFloat(fraction[2]);
+      rest = raw.slice(fraction[0].length).trim();
+    } else if (decimal) {
+      num = parseFloat(decimal[1]);
+      rest = raw.slice(decimal[0].length).trim();
+    }
+    if (num == null || !isFinite(num) || num <= 0) return { amount: '1', unit: 'шт.' };
+    var rules = [
+      [/^(kg|kgs|kilogram|kilograms)$/i, 'кг', 1],
+      [/^(g|gm|gms|gram|grams)$/i, 'г', 1],
+      [/^(ml|millilitre|millilitres|milliliter|milliliters)$/i, 'мл', 1],
+      [/^(l|lt|litre|liter|litres|liters)$/i, 'л', 1],
+      [/^(tbsp|tbsps|tablespoon|tablespoons|tbls)$/i, 'ст. л.', 1],
+      [/^(tsp|tsps|teaspoon|teaspoons)$/i, 'ч. л.', 1],
+      [/^(cup|cups)$/i, 'мл', 240],
+      [/^(oz|ounce|ounces)$/i, 'г', 28],
+      [/^(lb|lbs|pound|pounds)$/i, 'г', 454],
+      [/^(clove|cloves|piece|pieces|slice|slices|whole|can|cans|jar|jars|bunch|bunches|sprig|sprigs|pinch|pinches|handful|large|small|medium|stalk|stalks)$/i, 'шт.', 1]
+    ];
+    var unit = 'шт.';
+    var factor = 1;
+    rest.split(/\s+/).some(function(word) {
+      var token = word.replace(/[.,]/g, '');
+      return rules.some(function(rule) {
+        if (!rule[0].test(token)) return false;
+        unit = rule[1];
+        factor = rule[2];
+        return true;
+      });
+    });
+    num = num * factor;
+    var amount = num >= 10 ? String(Math.round(num)) : String(Math.round(num * 10) / 10);
+    if (amount.indexOf('.') >= 0) amount = amount.replace(/\.0$/, '');
+    return { amount: amount, unit: unit };
+  };
+  var mealIngredients = function(meal) {
+    var rows = [];
+    for (var index = 1; index <= 20; index += 1) {
+      var name = String(meal['strIngredient' + index] || '').trim();
+      if (!name) continue;
+      var parsed = parseMeasure(meal['strMeasure' + index]);
+      rows.push({ name: name, amount: parsed.amount, unit: parsed.unit });
+    }
+    return rows.length ? rows : [{ name: '', amount: '', unit: 'г' }];
+  };
+  var shortenMethod = function(instructions) {
+    var text = String(instructions || '').replace(/\r/g, '\n').trim();
+    var splitSentences = function(value) {
+      var out = [];
+      var buf = '';
+      for (var i = 0; i < value.length; i += 1) {
+        var ch = value.charAt(i);
+        buf += ch;
+        if (/[.!?]/.test(ch) && (i === value.length - 1 || value.charAt(i + 1) === ' ')) {
+          if (buf.trim()) out.push(buf.trim());
+          buf = '';
+          if (value.charAt(i + 1) === ' ') i += 1;
+        }
+      }
+      if (buf.trim()) out.push(buf.trim());
+      return out;
+    };
+    var chunks = text.split(/\n+/).map(function(line) {
+      return line.replace(/^\s*(step\s*)?\d+[\).:\-]\s*/i, '').replace(/\s+/g, ' ').trim();
+    }).filter(function(line) { return line.length >= 8; });
+    if (chunks.length <= 1) chunks = splitSentences(text.replace(/\n+/g, ' ')).filter(function(line) { return line.length >= 8; });
+    var steps = [];
+    chunks.forEach(function(line) {
+      if (line.length <= 180) steps.push(line);
+      else splitSentences(line).forEach(function(sentence) {
+        var clean = sentence.trim();
+        if (clean.length < 8) return;
+        steps.push(clean.length > 180 ? clean.slice(0, 177).replace(/\s+\S*$/, '') + '…' : clean);
+      });
+    });
+    if (steps.length > 8) {
+      var grouped = [];
+      var size = Math.ceil(steps.length / 8);
+      for (var start = 0; start < steps.length && grouped.length < 8; start += size) {
+        var piece = steps.slice(start, start + size).join(' ');
+        if (piece.length > 180) piece = piece.slice(0, 177).replace(/\s+\S*$/, '') + '…';
+        grouped.push(piece);
+      }
+      steps = grouped;
+    }
+    if (!steps.length) steps = ['Cook the dish from the ingredients.'];
+    return steps.map(function(line) { return { text: line, photo: '' }; });
+  };
+  var guessFoodTags = function(meal, ingredients) {
+    var blob = [meal && meal.strCategory, meal && meal.strMeal, meal && meal.strTags].concat((ingredients || []).map(function(item) { return item.name; })).join(' ').toLowerCase();
+    var tags = [];
+    if (/chicken|turkey|курица/.test(blob)) tags.push('Chicken');
+    if (/beef|steak|говяд/.test(blob)) tags.push('Beef');
+    if (/veal|телят/.test(blob)) tags.push('Veal');
+    if (/fish|salmon|tuna|prawn|shrimp|seafood|cod|trout|рыба|лосос/.test(blob)) tags.push('Fish');
+    return tags;
   };
   var SEARCH_PAIRS = [
     ['salmon', 'лосос'], ['steak', 'стейк'], ['vegetable', 'овощ'], ['pasta', 'паста'],
@@ -785,6 +942,8 @@ const ComponentFunction = function() {
       React.createElement(StatusBar, { testID: 'StatusBar-Recipes', backgroundColor: backgroundColor, barStyle: 'light-content' }),
       React.createElement(View, { testID: 'View-21', style: styles.tabScreen, componentId: 'recipes-content' },
         React.createElement(Header, { testID: 'Header-2', id: 'recipes', title: 'Recipes', action: React.createElement(View, { testID: 'View-RecipesActions', style: styles.homeHeaderActions },
+          React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-Import', style: styles.importEntry, onPress: function() { props.navigation.navigate('RecipeImport'); }, accessibilityLabel: 'Добавить извне', componentId: 'recipes-import' },
+            React.createElement(Text, { style: styles.importEntryText }, 'From outside')),
           React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-ManageMenu', style: styles.iconAction, onPress: function() { props.navigation.navigate('MenuManager'); }, componentId: 'recipes-manage' },
             React.createElement(Ionicons, { testID: 'Ionicons-Gear', name: 'settings-outline', size: 24, color: textSecondary }))
         ) }),
@@ -1266,12 +1425,13 @@ const ComponentFunction = function() {
     var camera = useCamera();
     var fields = useInvalidFields();
     
-    var nameState = React.useState('');
-    var priceState = React.useState('');
-    var ingredientsState = React.useState([{ name: '', amount: '', unit: 'г' }]);
-    var stepsState = React.useState([{ text: '', photo: '' }]);
+    var prefill = props.route?.params?.prefill || null;
+    var nameState = React.useState(prefill ? String(prefill.dish_name || '') : '');
+    var priceState = React.useState(prefill ? String(prefill.price_rubles != null ? prefill.price_rubles : 0) : '');
+    var ingredientsState = React.useState(prefill && prefill.ingredients && prefill.ingredients.length ? prefill.ingredients : [{ name: '', amount: '', unit: 'г' }]);
+    var stepsState = React.useState(prefill && prefill.steps && prefill.steps.length ? prefill.steps : [{ text: '', photo: '' }]);
     
-    var tagsState = React.useState([]);
+    var tagsState = React.useState(prefill ? onlyFoodTags(prefill.tags) : []);
     var selectedTags = tagsState[0], setSelectedTags = tagsState[1];
 
     var errorState = React.useState('');
@@ -1294,7 +1454,7 @@ const ComponentFunction = function() {
     var steps = stepsState[0], setSteps = stepsState[1];
     var error = errorState[0], setError = errorState[1];
     
-    var photoUriState = React.useState(null);
+    var photoUriState = React.useState(prefill ? (prefill.photo_uri || null) : null);
     var photoUri = photoUriState[0], setPhotoUri = photoUriState[1];
 
     var choosePhoto = function() {
@@ -1350,7 +1510,8 @@ const ComponentFunction = function() {
       var serializedSteps = serializeStructuredSteps(steps);
       setError('');
       insert.mutate({ dish_name: name.trim(), price_rubles: Number(price), ingredients: serializedIngredients, recipe_steps: serializedSteps, photo_uri: photoUri, tags: onlyFoodTags(selectedTags) }).then(function() {
-        props.navigation.goBack();
+        if (prefill) props.navigation.navigate('Main', { screen: 'Recipes' });
+        else props.navigation.goBack();
       }, function() { setError('Couldn’t save this dish. Your details are still here—try saving again.'); });
     };
 
@@ -1931,6 +2092,8 @@ const ComponentFunction = function() {
     searchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12, marginBottom: 12 },
     searchInput: { flex: 1, height: 48, minHeight: 48, maxHeight: 48, borderRadius: radiusPill, backgroundColor: cardColor, borderWidth: 1, borderColor: borderColor, paddingHorizontal: 16, color: textPrimary, fontSize: 15 },
     recipeSearch: { width: '100%', height: 48, minHeight: 48, maxHeight: 48, flexGrow: 0, flexShrink: 0, marginTop: 8, marginBottom: 4, borderRadius: 24, backgroundColor: cardColor, borderWidth: 1, borderColor: borderColor, paddingHorizontal: 16, paddingVertical: 0, color: textPrimary, fontSize: 15 },
+    importEntry: { height: 36, paddingHorizontal: 12, borderRadius: 18, borderWidth: 1, borderColor: accentColor, alignItems: 'center', justifyContent: 'center' },
+    importEntryText: { color: accentColor, fontSize: 13, fontWeight: '700' },
     searchAdd: { width: 48, height: 48, borderRadius: 24, backgroundColor: accentColor, alignItems: 'center', justifyContent: 'center' },
     swipeShell: { marginBottom: 10, overflow: 'hidden' },
     swipeFront: { backgroundColor: cardColor, width: '100%', borderRadius: radiusMd },
@@ -1965,7 +2128,104 @@ const ComponentFunction = function() {
   };
   // @end:TabNavigator
 
-  // @section:MainNavigator @depends:[TabNavigator,SpinResultScreen,RecipeDetailScreen,DishEditorScreen,DishDetailScreen,CameraScreen,MenuManagerScreen,HistoryScreen,navigation-setup]
+  // @section:RecipeImportScreen @depends:[ThemeContext,shared-components,styles]
+  var RecipeImportScreen = function(props) {
+    var insets = useSafeAreaInsets();
+    var queryState = React.useState('');
+    var query = queryState[0], setQuery = queryState[1];
+    var resultState = React.useState([]);
+    var results = resultState[0], setResults = resultState[1];
+    var statusState = React.useState('idle');
+    var status = statusState[0], setStatus = statusState[1];
+    var busyState = React.useState('');
+    var busyId = busyState[0], setBusyId = busyState[1];
+    var search = function() {
+      var text = String(query || '').trim();
+      if (!text || status === 'loading') return;
+      setStatus('loading');
+      setResults([]);
+      var lookup = /[а-яё]/i.test(text) ? translateLines([text], 'ru', 'en').then(function(lines) { return lines[0] || text; }) : Promise.resolve(text);
+      lookup.then(function(english) {
+        var term = String(english || text).trim() || text;
+        return fetch('https://www.themealdb.com/api/json/v1/1/search.php?s=' + encodeURIComponent(term));
+      }).then(function(response) { return response.json(); }).then(function(data) {
+        var meals = data && data.meals || [];
+        var rows = meals.map(function(meal) {
+          return { id: meal.idMeal, name: meal.strMeal, thumb: meal.strMealThumb || '' };
+        });
+        return translateLines(rows.map(function(row) { return row.name; }), 'en', 'ru').then(function(names) {
+          setResults(rows.map(function(row, index) { return Object.assign({}, row, { title: names[index] || row.name }); }));
+          setStatus(rows.length ? 'ready' : 'empty');
+        });
+      }).catch(function() { setStatus('error'); });
+    };
+    var addMeal = function(row) {
+      if (busyId) return;
+      setBusyId(row.id);
+      fetch('https://www.themealdb.com/api/json/v1/1/lookup.php?i=' + encodeURIComponent(row.id)).then(function(response) { return response.json(); }).then(function(data) {
+        var meal = data && data.meals && data.meals[0];
+        if (!meal) throw new Error('empty');
+        var ingredients = mealIngredients(meal);
+        var steps = shortenMethod(meal.strInstructions);
+        var tags = guessFoodTags(meal, ingredients);
+        var lines = [meal.strMeal].concat(ingredients.map(function(item) { return item.name; }), steps.map(function(step) { return step.text; }));
+        return translateLines(lines, 'en', 'ru').then(function(translated) {
+          var name = translated[0] || row.title || meal.strMeal;
+          var ingredientCount = ingredients.length;
+          var nextIngredients = ingredients.map(function(item, index) {
+            return { name: translated[index + 1] || item.name, amount: item.amount, unit: item.unit };
+          });
+          var nextSteps = steps.map(function(step, index) {
+            return { text: translated[ingredientCount + 1 + index] || step.text, photo: '' };
+          });
+          props.navigation.navigate('DishEditor', {
+            prefill: {
+              dish_name: name,
+              price_rubles: 0,
+              photo_uri: meal.strMealThumb || row.thumb || '',
+              ingredients: nextIngredients,
+              steps: nextSteps,
+              tags: tags
+            }
+          });
+        });
+      }).catch(function() {
+        Alert.alert('Рецепт', 'Не удалось загрузить этот рецепт. Проверьте интернет и попробуйте ещё раз.');
+      }).then(function() { setBusyId(''); });
+    };
+    return React.createElement(View, { style: [styles.screen, { paddingTop: insets.top }], componentId: 'recipe-import-screen' },
+      React.createElement(StatusBar, { backgroundColor: backgroundColor, barStyle: 'light-content' }),
+      React.createElement(View, { style: styles.tabScreen },
+        React.createElement(Header, { id: 'recipe-import', title: 'Add from outside', back: function() { props.navigation.goBack(); } }),
+        React.createElement(View, { style: styles.searchRow },
+          React.createElement(TextInput, { style: styles.searchInput, value: query, onChangeText: setQuery, placeholder: 'Search recipes', autoCapitalize: 'none', autoCorrect: false, returnKeyType: 'search', onSubmitEditing: search }),
+          React.createElement(TouchableOpacity, { style: styles.searchAdd, onPress: search, accessibilityLabel: 'Найти' },
+            React.createElement(Ionicons, { name: 'search', size: 22, color: onAccentColor }))),
+        React.createElement(Text, { style: [styles.smallMuted, { marginBottom: 8 }] }, 'Фото, название и короткий рецепт. Шаги с сайта без своих фото.'),
+        status === 'loading' ? React.createElement(View, { style: styles.centerEmpty },
+          React.createElement(Text, { style: styles.bodyMuted }, 'Ищем и переводим…')) :
+        status === 'error' ? React.createElement(View, { style: styles.centerEmpty },
+          React.createElement(Text, { style: styles.title }, 'Catalog is unavailable'),
+          React.createElement(PrimaryButton, { id: 'import-retry', label: 'Try again', onPress: search })) :
+        status === 'empty' ? React.createElement(View, { style: styles.centerEmpty },
+          React.createElement(Text, { style: styles.title }, 'Nothing in the catalog')) :
+        status === 'idle' ? React.createElement(View, { style: styles.centerEmpty },
+          React.createElement(Text, { style: styles.bodyMuted }, 'Напишите название блюда и нажмите поиск.')) :
+        React.createElement(ScrollView, { style: styles.flexScroll, keyboardShouldPersistTaps: 'handled', contentContainerStyle: { paddingBottom: insets.bottom + 24 } },
+          results.map(function(row) {
+            return React.createElement(View, { key: row.id, style: styles.menuRow },
+              row.thumb ? React.createElement(Image, { source: { uri: row.thumb }, style: styles.menuImage, resizeMode: 'cover' }) :
+                React.createElement(View, { style: [styles.menuImage, styles.imageFallback] }, React.createElement(Ionicons, { name: 'restaurant-outline', size: 22, color: textSecondary })),
+              React.createElement(Text, { style: [styles.medium, { flex: 1 }] }, row.title || row.name),
+              React.createElement(TouchableOpacity, { style: styles.searchAdd, onPress: function() { addMeal(row); }, disabled: !!busyId, accessibilityLabel: 'Добавить' },
+                React.createElement(Ionicons, { name: busyId === row.id ? 'hourglass-outline' : 'add', size: 26, color: onAccentColor }))
+            );
+          }))
+      ));
+  };
+  // @end:RecipeImportScreen
+
+  // @section:MainNavigator @depends:[TabNavigator,SpinResultScreen,RecipeDetailScreen,DishEditorScreen,DishDetailScreen,CameraScreen,MenuManagerScreen,HistoryScreen,RecipeImportScreen,navigation-setup]
   var MainNavigator = function() {
     return React.createElement(Stack.Navigator, { testID: 'Navigator-2', initialRouteName: 'Main', screenOptions: { headerShown: false, cardStyle: { backgroundColor: backgroundColor } } },
       React.createElement(Stack.Screen, { testID: 'Screen-4', name: 'Main', component: TabNavigator }),
@@ -1976,7 +2236,8 @@ const ComponentFunction = function() {
       React.createElement(Stack.Screen, { testID: 'Screen-9', name: 'Camera', component: CameraScreen }),
       React.createElement(Stack.Screen, { testID: 'Screen-10', name: 'MenuManager', component: MenuManagerScreen }),
       React.createElement(Stack.Screen, { testID: 'Screen-12', name: 'PlaceEditor', component: PlaceEditorScreen }),
-      React.createElement(Stack.Screen, { testID: 'Screen-11', name: 'History', component: HistoryScreen }));
+      React.createElement(Stack.Screen, { testID: 'Screen-11', name: 'History', component: HistoryScreen }),
+      React.createElement(Stack.Screen, { testID: 'Screen-14', name: 'RecipeImport', component: RecipeImportScreen }));
   };
   // @end:MainNavigator
 
