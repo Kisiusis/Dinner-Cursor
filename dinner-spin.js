@@ -1,7 +1,7 @@
 const ComponentFunction = function() {
   // @section:imports @depends:[]
   const React = require('react');
-  const { View, Text: NativeText, ScrollView: NativeScrollView, TouchableOpacity, TextInput: NativeTextInput, Image, StyleSheet, StatusBar, Platform, Alert, LayoutAnimation, Modal, Animated, PanResponder } = require('react-native');
+  const { View, Text: NativeText, ScrollView: NativeScrollView, TouchableOpacity, TextInput: NativeTextInput, Image, StyleSheet, StatusBar, Platform, Alert, LayoutAnimation, Modal, Animated, PanResponder, Dimensions, PermissionsAndroid } = require('react-native');
   var ScrollView = React.forwardRef(function(props, ref) {
     return React.createElement(NativeScrollView, Object.assign({
       showsVerticalScrollIndicator: false,
@@ -96,7 +96,8 @@ const ComponentFunction = function() {
     'Filter dishes': 'Фильтр блюд', 'Restaurants / Cafes': 'Рестораны / Кафе',
     'Recipes & Places': 'Рецепты и заведения', 'Pasta': 'Паста', 'Comfort food': 'Домашняя еда',
     'Fill in the highlighted fields': 'Заполните отмеченные поля',
-    'You can stop deciding': 'Можно больше не выбирать.'
+    'You can stop deciding': 'Можно больше не выбирать.',
+    'Search by name': 'Поиск по названию'
   };
   var translateText = function(value, language) {
     if (typeof value !== 'string') return value;
@@ -294,49 +295,72 @@ const ComponentFunction = function() {
     list.forEach(function(uri) { if (unique.indexOf(uri) < 0) unique.push(uri); });
     return unique.slice(0, 10);
   };
-  var pickGalleryPhotos = function(camera) {
-    var options = {
-      mediaType: 'photo', selectionLimit: 10, quality: 0.85, includeBase64: false,
-      allowsMultipleSelection: true, orderedSelection: true, multiple: true, limit: 10, maxFiles: 10
-    };
-    var fromResponse = function(response) {
-      if (!response || response.didCancel || response.canceled || response.cancelled || response.errorCode) return [];
-      return collectPhotoUris(response.assets || response.images || response);
-    };
-    var launchNative = function(launch) {
-      return new Promise(function(resolve, reject) {
-        var settled = false;
-        var finish = function(response) {
-          if (settled) return;
-          settled = true;
-          resolve(fromResponse(response));
-        };
-        try {
-          var pending = launch(options, finish);
-          if (pending && pending.then) pending.then(finish).catch(function(err) { if (!settled) reject(err); });
-        } catch (err) { if (!settled) reject(err); }
-      });
-    };
-    var NativeModules = require('react-native').NativeModules || {};
-    var native = NativeModules.ImagePicker || NativeModules.RNImagePicker || NativeModules.ExponentImagePicker;
-    var nativeLaunch = native && (native.launchImageLibrary || native.launchImageLibraryAsync);
-    var fromCamera = function() {
-      var call = function(method, args) {
-        try {
-          var pending = method.apply(camera, args);
-          return pending && pending.then ? pending : Promise.resolve(pending);
-        } catch (err) { return Promise.reject(err); }
-      };
-      var method = camera && (camera.pickImages || camera.pickMultipleImages || camera.pickImage);
-      if (!method) return Promise.resolve([]);
-      return call(method, [options]).then(collectPhotoUris).catch(function() {
-        if (!camera.pickImage) return [];
-        return call(camera.pickImage, [options]).then(collectPhotoUris).catch(function() { return call(camera.pickImage, []).then(collectPhotoUris); });
-      });
-    };
-    if (nativeLaunch) return launchNative(nativeLaunch.bind(native)).catch(fromCamera);
-    return fromCamera();
+  var optionalModule = function(name) {
+    try { return require(name); } catch (err) { return null; }
   };
+  var loadDevicePhotos = function() {
+    var take = function(list) {
+      var unique = [];
+      (list || []).forEach(function(uri) { if (uri && unique.indexOf(uri) < 0) unique.push(uri); });
+      return unique.slice(0, 150);
+    };
+    var allowAndroid = function() {
+      if (Platform.OS !== 'android' || !PermissionsAndroid || !PermissionsAndroid.request) return Promise.resolve(true);
+      var perm = (PermissionsAndroid.PERMISSIONS && (PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES || PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE)) || null;
+      if (!perm) return Promise.resolve(true);
+      return PermissionsAndroid.request(perm).then(function(result) {
+        return result === PermissionsAndroid.RESULTS.GRANTED;
+      }).catch(function() { return false; });
+    };
+    var fromExpo = function() {
+      var media = optionalModule('expo-media-library');
+      media = media && (media.default || media);
+      if (!media || !media.getAssetsAsync) return Promise.resolve(null);
+      var ask = media.requestPermissionsAsync ? media.requestPermissionsAsync() : Promise.resolve({ granted: true, status: 'granted' });
+      return ask.then(function(permission) {
+        var allowed = !permission || permission.granted || permission.status === 'granted' || permission.status === 'limited';
+        if (!allowed) return [];
+        return media.getAssetsAsync({ first: 150, mediaType: media.MediaType && media.MediaType.photo ? media.MediaType.photo : 'photo' }).then(function(page) {
+          return take((page && page.assets || []).map(function(asset) { return asset && (asset.uri || asset.localUri); }));
+        });
+      });
+    };
+    var fromRoll = function() {
+      var rollPkg = optionalModule('@react-native-camera-roll/camera-roll') || optionalModule('@react-native-community/cameraroll');
+      var CameraRoll = rollPkg && (rollPkg.CameraRoll || rollPkg.default || rollPkg);
+      if (!CameraRoll || !CameraRoll.getPhotos) return Promise.resolve(null);
+      return CameraRoll.getPhotos({ first: 150, assetType: 'Photos' }).then(function(result) {
+        return take((result && result.edges || []).map(function(edge) {
+          return edge && edge.node && edge.node.image && edge.node.image.uri;
+        }));
+      });
+    };
+    return allowAndroid().then(function(allowed) {
+      if (!allowed) return [];
+      var fromNative = function() {
+        var mods = require('react-native').NativeModules || {};
+        var mod = mods.RNCCameraRoll || mods.RNCameraRoll || mods.CameraRoll;
+        if (!mod || typeof mod.getPhotos !== 'function') return Promise.resolve(null);
+        try {
+          var pending = mod.getPhotos({ first: 150, assetType: 'Photos', groupTypes: 'All' });
+          if (!pending || !pending.then) return Promise.resolve(null);
+          return pending.then(function(result) {
+            return take((result && result.edges || []).map(function(edge) {
+              return edge && edge.node && edge.node.image && edge.node.image.uri;
+            }));
+          }).catch(function() { return null; });
+        } catch (err) { return Promise.resolve(null); }
+      };
+      return fromExpo().then(function(uris) {
+        if (uris && uris.length) return uris;
+        return fromRoll().then(function(rolled) {
+          if (rolled && rolled.length) return rolled;
+          return fromNative().then(function(nativeUris) { return nativeUris || rolled || uris || []; });
+        });
+      });
+    }).catch(function() { return []; });
+  };
+  var albumCallback = null;
   var capturePhoto = function(camera, extra) {
     var payload = Object.assign({
       locale: 'ru', language: 'ru',
@@ -663,7 +687,9 @@ const ComponentFunction = function() {
             React.createElement(Text, { style: styles.smallMuted }, 'Один раз — оставить в выборе. Второй — убрать. Третий — сбросить.'),
             renderFilterGroup('Где', 'Ресторан или кафе', PLACE_TAGS),
             renderFilterGroup('Блюдо', 'Рыба, мясо и другое', FOOD_TAGS),
-            React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginTop: 22 }], onPress: function() { setFilterModal(false); } },
+            React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginTop: 22, backgroundColor: surfaceAltColor, borderWidth: 1, borderColor: borderColor }], onPress: function() { filterStore[1]({}); } },
+              React.createElement(Text, { style: [styles.primaryButtonText, { color: textPrimary }] }, 'Сбросить')),
+            React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginTop: 8 }], onPress: function() { setFilterModal(false); } },
               React.createElement(Text, { style: styles.primaryButtonText }, 'Готово'))
           )
         )
@@ -677,6 +703,10 @@ const ComponentFunction = function() {
     var insets = useSafeAreaInsets();
     var query = useQuery('dishes');
     var context = useTheme();
+    var searchState = React.useState('');
+    var search = searchState[0], setSearch = searchState[1];
+    var recipes = query.data || [];
+    var visible = recipes.filter(function(dish) { return matchesQuery(search, dish && dish.dish_name); });
     return React.createElement(View, { testID: 'View-20', style: [styles.screen, { paddingTop: insets.top }], componentId: 'recipes-screen' },
       React.createElement(StatusBar, { testID: 'StatusBar-Recipes', backgroundColor: backgroundColor, barStyle: 'light-content' }),
       React.createElement(View, { testID: 'View-21', style: styles.tabScreen, componentId: 'recipes-content' },
@@ -684,12 +714,14 @@ const ComponentFunction = function() {
           React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-ManageMenu', style: styles.iconAction, onPress: function() { props.navigation.navigate('MenuManager'); }, componentId: 'recipes-manage' },
             React.createElement(Ionicons, { testID: 'Ionicons-Gear', name: 'settings-outline', size: 24, color: textSecondary }))
         ) }),
-        !query.data.length ? React.createElement(View, { testID: 'View-22', style: styles.centerEmpty, componentId: 'recipes-empty' },
+        recipes.length ? React.createElement(TextInput, { style: [styles.searchInput, { marginTop: 8 }], value: search, onChangeText: setSearch, placeholder: 'Search by name', autoCapitalize: 'none', autoCorrect: false, componentId: 'recipes-search' }) : null,
+        !recipes.length ? React.createElement(View, { testID: 'View-22', style: styles.centerEmpty, componentId: 'recipes-empty' },
           React.createElement(Text, { testID: 'Text-17', style: [styles.title, { fontSize: 22}], componentId: 'recipes-empty-title' }, 'Your saved recipes'),
           React.createElement(Text, { testID: 'Text-18', style: styles.bodyMuted, componentId: 'recipes-empty-copy' }, 'Add a dish to keep its recipe here.'),
           React.createElement(PrimaryButton, { testID: 'PrimaryButton-AddFirst', id: 'recipes-empty-add', label: 'Add dish', onPress: function() { props.navigation.navigate('MenuManager'); } })) :
-          React.createElement(ScrollView, { testID: 'ScrollView-2', style: styles.flexScroll, contentContainerStyle: { paddingTop: 16, paddingBottom: TAB_MENU_HEIGHT + insets.bottom + SCROLL_EXTRA_PADDING }, componentId: 'recipes-list' },
-            query.data.map(function(dish, index) {
+          React.createElement(ScrollView, { testID: 'ScrollView-2', style: styles.flexScroll, contentContainerStyle: { paddingTop: 12, paddingBottom: TAB_MENU_HEIGHT + insets.bottom + SCROLL_EXTRA_PADDING }, componentId: 'recipes-list' },
+            visible.length ? null : React.createElement(Text, { style: [styles.bodyMuted, { textAlign: 'center', marginTop: 24 }] }, 'Ничего не найдено'),
+            visible.map(function(dish, index) {
               return React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-7', key: String(dish?.id || index), style: styles.recipeCard, onPress: function() { props.navigation.navigate('RecipeDetail', { dishId: dish?.id }); }, componentId: 'recipes-item-' + index },
                 React.createElement(DishImage, { testID: 'DishImage-2', dish: dish, style: styles.recipeListImage, componentId: 'recipes-image-' + index }),
                 React.createElement(View, { testID: 'View-23', style: styles.recipeListCopy, componentId: 'recipes-copy-' + index },
@@ -705,7 +737,6 @@ const ComponentFunction = function() {
     var insets = useSafeAreaInsets();
     var query = useQuery('dishes');
     var context = useTheme();
-    var camera = useCamera();
     var removeDish = useMutation('dishes', 'delete');
     var searchState = React.useState('');
     var search = searchState[0], setSearch = searchState[1];
@@ -716,15 +747,6 @@ const ComponentFunction = function() {
     var places = placesStore[0] || [];
     var setPlaces = placesStore[1];
 
-    var placeModalState = React.useState(false);
-    var placeModal = placeModalState[0], setPlaceModal = placeModalState[1];
-    var editingPlaceState = React.useState(null);
-    var editingPlace = editingPlaceState[0], setEditingPlace = editingPlaceState[1];
-    var pNameState = React.useState('');
-    var pAddressState = React.useState('');
-    var pDescState = React.useState('');
-    var pPhotosState = React.useState([]);
-    var placePhotosNow = pPhotosState[0] || [];
     var activeSwipeState = React.useState(null);
     var activeSwipe = activeSwipeState[0], setActiveSwipe = activeSwipeState[1];
     var dragLockRef = React.useRef(false);
@@ -743,74 +765,7 @@ const ComponentFunction = function() {
     };
 
     var openPlaceEditor = function(index) {
-      if (index === null || index === undefined) {
-        setEditingPlace(null);
-        pNameState[1]('');
-        pAddressState[1]('');
-        pDescState[1]('');
-        pPhotosState[1]([]);
-      } else {
-        var place = places[index] || {};
-        setEditingPlace(index);
-        pNameState[1](place.name || '');
-        pAddressState[1](place.address || '');
-        pDescState[1](place.desc || '');
-        pPhotosState[1](placePhotos(place));
-      }
-      setPlaceModal(true);
-    };
-    var appendPlacePhoto = function(uri) {
-      if (!uri) return;
-      pPhotosState[1](function(prev) {
-        var next = [].concat(prev || []);
-        if (next.length >= 10 || next.indexOf(uri) >= 0) return next;
-        next.push(uri);
-        return next;
-      });
-    };
-    var addPlacePhoto = function() {
-      Alert.alert('Фото заведения', 'Можно добавить до 10 фото.', [
-        { text: 'Сделать фото', onPress: function() {
-          capturePhoto(camera).then(function(res) {
-            var uri = collectPhotoUris(res)[0];
-            if (uri) appendPlacePhoto(uri);
-          }).catch(function() {});
-        } },
-        { text: 'Выбрать из галереи', onPress: function() {
-          pickGalleryPhotos(camera).then(function(uris) { (uris || []).forEach(appendPlacePhoto); }).catch(function() {});
-        } },
-        { text: 'Отмена', style: 'cancel' }
-      ]);
-    };
-    var savePlace = function() {
-      var next = {
-        name: String(pNameState[0] || '').trim(),
-        address: String(pAddressState[0] || '').trim(),
-        desc: String(pDescState[0] || '').trim(),
-        photos: placePhotosNow.filter(Boolean)
-      };
-      if (!next.name) {
-        Alert.alert('Название', 'Укажите название заведения.');
-        return;
-      }
-      setPlaces(function(prev) {
-        var list = prev || [];
-        if (editingPlace === null || editingPlace === undefined) return list.concat([next]);
-        return list.map(function(place, i) { return i === editingPlace ? next : place; });
-      });
-      setPlaceModal(false);
-    };
-    var deletePlace = function() {
-      if (editingPlace === null || editingPlace === undefined) return;
-      var action = function() {
-        setPlaces(function(prev) { return (prev || []).filter(function(_, i) { return i !== editingPlace; }); });
-        setPlaceModal(false);
-      };
-      if (Platform.OS === 'web') { if (window.confirm('Удалить это заведение?')) action(); }
-      else Alert.alert('Удалить заведение', 'Удалить это заведение из списка?', [
-        { text: 'Отмена', style: 'cancel' },
-        { text: 'Удалить', style: 'destructive', onPress: action }
-      ]);
+      props.navigation.navigate('PlaceEditor', { placeIndex: index === null || index === undefined ? -1 : index });
     };
     var removePlaceAt = function(index) {
       var action = function() { setPlaces(function(prev) { return (prev || []).filter(function(_, i) { return i !== index; }); }); };
@@ -894,45 +849,190 @@ const ComponentFunction = function() {
                 })
               )
           )
-        ),
-
-        React.createElement(Modal, { visible: placeModal, transparent: true, animationType: 'fade', onRequestClose: function() { setPlaceModal(false); } },
-          React.createElement(View, { style: styles.modalBackdrop },
-            React.createElement(View, { style: styles.placeModalCard },
-              React.createElement(Text, { style: styles.sectionTitle }, editingPlace === null || editingPlace === undefined ? 'Новое заведение' : 'Редактирование заведения'),
-              React.createElement(ScrollView, { style: styles.placeModalScroll, contentContainerStyle: { paddingBottom: 8 } },
-                React.createElement(TextInput, { style: [styles.input, { width: '100%', marginBottom: 8 }], placeholder: 'Название кафе / ресторана', value: pNameState[0], onChangeText: pNameState[1] }),
-                React.createElement(TextInput, { style: [styles.input, { width: '100%', marginBottom: 8 }], placeholder: 'Адрес', value: pAddressState[0], onChangeText: pAddressState[1] }),
-                React.createElement(TextInput, { style: [styles.textArea, { width: '100%', marginBottom: 8, minHeight: 80 }], placeholder: 'Прайс, описание...', value: pDescState[0], onChangeText: pDescState[1], multiline: true }),
-                React.createElement(Text, { style: styles.fieldLabel }, 'Фотографии'),
-                React.createElement(Text, { style: styles.smallMuted }, 'До 10 фото.'),
-                React.createElement(View, { style: styles.placePhotoRow },
-                  placePhotosNow.map(function(uri, photoIndex) {
-                    return React.createElement(View, { key: String(photoIndex), style: styles.placePhotoTile },
-                      React.createElement(Image, { source: { uri: uri }, style: styles.placePhotoImage, resizeMode: 'cover' }),
-                      React.createElement(TouchableOpacity, { style: styles.placePhotoRemove, onPress: function() {
-                        pPhotosState[1](function(prev) { return (prev || []).filter(function(_, i) { return i !== photoIndex; }); });
-                      } },
-                        React.createElement(Ionicons, { name: 'close', size: 14, color: textPrimary }))
-                    );
-                  }),
-                  placePhotosNow.length >= 10 ? null : React.createElement(TouchableOpacity, { style: styles.placePhotoAdd, onPress: addPlacePhoto },
-                    React.createElement(Ionicons, { name: 'camera-outline', size: 22, color: accentColor }),
-                    React.createElement(Text, { style: styles.smallMuted }, 'Добавить'))
-                )
-              ),
-              React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginTop: 12, marginBottom: 8 }], onPress: savePlace },
-                React.createElement(Text, { style: styles.primaryButtonText }, 'Сохранить')),
-              editingPlace === null || editingPlace === undefined ? null : React.createElement(TouchableOpacity, { style: [styles.primaryButton, { backgroundColor: '#E25B52', marginBottom: 8 }], onPress: deletePlace },
-                React.createElement(Text, { style: [styles.primaryButtonText, { color: '#FFF' }] }, 'Удалить заведение')),
-              React.createElement(TouchableOpacity, { style: [styles.primaryButton, { backgroundColor: surfaceAltColor, borderWidth: 1, borderColor: borderColor }], onPress: function() { setPlaceModal(false); } },
-                React.createElement(Text, { style: [styles.primaryButtonText, { color: textPrimary }] }, 'Отмена'))
-            )
-          )
         )
       ));
   };
   // @end:MenuManagerScreen
+
+  // @section:PlaceEditorScreen @depends:[ThemeContext,shared-components,styles]
+  var PlaceEditorScreen = function(props) {
+    var insets = useSafeAreaInsets();
+    var camera = useCamera();
+    var placesStore = useStorage('dinner-places', []);
+    var setPlaces = placesStore[1];
+    var placeIndex = props.route?.params?.placeIndex;
+    var isNew = !(placeIndex >= 0);
+    var existing = isNew ? {} : ((placesStore[0] || [])[placeIndex] || {});
+    var nameState = React.useState(existing.name || '');
+    var addressState = React.useState(existing.address || '');
+    var descState = React.useState(existing.desc || '');
+    var photosState = React.useState(placePhotos(existing));
+    var photos = photosState[0] || [];
+    var hydrated = React.useRef(!isNew && !!(existing && existing.name));
+    React.useEffect(function() {
+      if (hydrated.current || isNew) return;
+      var place = (placesStore[0] || [])[placeIndex];
+      if (!place) return;
+      hydrated.current = true;
+      nameState[1](place.name || '');
+      addressState[1](place.address || '');
+      descState[1](place.desc || '');
+      photosState[1](placePhotos(place));
+    }, [placesStore[0], placeIndex]);
+    var appendPlacePhoto = function(uri) {
+      if (!uri) return;
+      photosState[1](function(prev) {
+        var next = [].concat(prev || []);
+        if (next.length >= 10 || next.indexOf(uri) >= 0) return next;
+        next.push(uri);
+        return next;
+      });
+    };
+    var openAlbum = function() {
+      var room = 10 - (photosState[0] || []).length;
+      if (room <= 0) return;
+      albumCallback = function(uris) { (uris || []).slice(0, room).forEach(appendPlacePhoto); };
+      props.navigation.navigate('PhotoAlbum', { limit: room });
+    };
+    var addPlacePhoto = function() {
+      Alert.alert('Фото заведения', 'Можно добавить до 10 фото.', [
+        { text: 'Сделать фото', onPress: function() {
+          capturePhoto(camera).then(function(res) {
+            var uri = collectPhotoUris(res)[0];
+            if (uri) appendPlacePhoto(uri);
+          }).catch(function() {});
+        } },
+        { text: 'Выбрать из галереи', onPress: openAlbum },
+        { text: 'Отмена', style: 'cancel' }
+      ]);
+    };
+    var savePlace = function() {
+      var next = {
+        name: String(nameState[0] || '').trim(),
+        address: String(addressState[0] || '').trim(),
+        desc: String(descState[0] || '').trim(),
+        photos: (photosState[0] || []).filter(Boolean)
+      };
+      if (!next.name) {
+        Alert.alert('Название', 'Укажите название заведения.');
+        return;
+      }
+      setPlaces(function(prev) {
+        var list = prev || [];
+        if (isNew) return list.concat([next]);
+        return list.map(function(place, i) { return i === placeIndex ? next : place; });
+      });
+      props.navigation.goBack();
+    };
+    var deletePlace = function() {
+      if (isNew) return;
+      var action = function() {
+        setPlaces(function(prev) { return (prev || []).filter(function(_, i) { return i !== placeIndex; }); });
+        props.navigation.goBack();
+      };
+      if (Platform.OS === 'web') { if (window.confirm('Удалить это заведение?')) action(); }
+      else Alert.alert('Удалить заведение', 'Удалить это заведение из списка?', [
+        { text: 'Отмена', style: 'cancel' },
+        { text: 'Удалить', style: 'destructive', onPress: action }
+      ]);
+    };
+    return React.createElement(View, { style: [styles.screen, { paddingTop: insets.top }], componentId: 'place-editor-screen' },
+      React.createElement(StatusBar, { backgroundColor: backgroundColor, barStyle: 'light-content' }),
+      React.createElement(Header, { id: 'place-editor', title: isNew ? 'Новое заведение' : 'Редактирование заведения', back: function() { albumCallback = null; props.navigation.goBack(); } }),
+      React.createElement(ScrollView, { style: styles.flexScroll, keyboardShouldPersistTaps: 'handled', contentContainerStyle: { paddingHorizontal: 16, paddingBottom: insets.bottom + 120 } },
+        React.createElement(Text, { style: styles.fieldLabel }, 'Название'),
+        React.createElement(TextInput, { style: styles.input, value: nameState[0], onChangeText: nameState[1], placeholder: 'Название кафе / ресторана' }),
+        React.createElement(Text, { style: styles.fieldLabel }, 'Адрес'),
+        React.createElement(TextInput, { style: styles.input, value: addressState[0], onChangeText: addressState[1], placeholder: 'Адрес' }),
+        React.createElement(Text, { style: styles.fieldLabel }, 'Прайс, описание'),
+        React.createElement(TextInput, { style: [styles.textArea, { minHeight: 96 }], value: descState[0], onChangeText: descState[1], placeholder: 'Прайс, описание...', multiline: true }),
+        React.createElement(Text, { style: styles.fieldLabel }, 'Фотографии'),
+        React.createElement(Text, { style: styles.smallMuted }, 'До 10 фото. В альбоме отметьте несколько и нажмите галочку справа сверху.'),
+        React.createElement(View, { style: styles.placePhotoRow },
+          photos.map(function(uri, photoIndex) {
+            return React.createElement(View, { key: String(photoIndex), style: styles.placePhotoTile },
+              React.createElement(Image, { source: { uri: uri }, style: styles.placePhotoImage, resizeMode: 'cover' }),
+              React.createElement(TouchableOpacity, { style: styles.placePhotoRemove, onPress: function() {
+                photosState[1](function(prev) { return (prev || []).filter(function(_, i) { return i !== photoIndex; }); });
+              } },
+                React.createElement(Ionicons, { name: 'close', size: 14, color: textPrimary }))
+            );
+          }),
+          photos.length >= 10 ? null : React.createElement(TouchableOpacity, { style: styles.placePhotoAdd, onPress: addPlacePhoto },
+            React.createElement(Ionicons, { name: 'camera-outline', size: 22, color: accentColor }),
+            React.createElement(Text, { style: styles.smallMuted }, 'Добавить'))
+        ),
+        isNew ? null : React.createElement(TouchableOpacity, { style: [styles.primaryButton, { backgroundColor: '#E25B52', marginTop: 18 }], onPress: deletePlace },
+          React.createElement(Text, { style: [styles.primaryButtonText, { color: '#FFF' }] }, 'Удалить заведение'))
+      ),
+      React.createElement(View, { style: [styles.pinnedAction, { paddingBottom: insets.bottom + 12, paddingHorizontal: 16 }] },
+        React.createElement(PrimaryButton, { id: 'place-editor-save', label: 'Сохранить', onPress: savePlace }))
+    );
+  };
+  // @end:PlaceEditorScreen
+
+  // @section:PhotoAlbumScreen @depends:[ThemeContext,shared-components,styles]
+  var PhotoAlbumScreen = function(props) {
+    var insets = useSafeAreaInsets();
+    var limit = Math.max(1, Math.min(10, Number(props.route?.params?.limit) || 10));
+    var photosState = React.useState([]);
+    var photos = photosState[0];
+    var selectedState = React.useState([]);
+    var selected = selectedState[0];
+    var statusState = React.useState('loading');
+    var status = statusState[0];
+    var tile = Math.floor(Dimensions.get('window').width / 3);
+    var reload = function() {
+      statusState[1]('loading');
+      loadDevicePhotos().then(function(uris) {
+        photosState[1](uris || []);
+        statusState[1](uris && uris.length ? 'ready' : 'empty');
+      }).catch(function() { statusState[1]('empty'); });
+    };
+    React.useEffect(function() { reload(); }, []);
+    var toggle = function(uri) {
+      selectedState[1](function(prev) {
+        var list = prev || [];
+        var at = list.indexOf(uri);
+        if (at >= 0) return list.filter(function(item) { return item !== uri; });
+        if (list.length >= limit) return list;
+        return list.concat([uri]);
+      });
+    };
+    var confirmAlbum = function() {
+      if (!selected.length) return;
+      var deliver = albumCallback;
+      albumCallback = null;
+      if (deliver) deliver(selected.slice());
+      props.navigation.goBack();
+    };
+    var closeAlbum = function() {
+      albumCallback = null;
+      props.navigation.goBack();
+    };
+    var check = React.createElement(TouchableOpacity, { style: styles.iconAction, onPress: confirmAlbum, disabled: !selected.length, accessibilityLabel: 'Использовать' },
+      React.createElement(Ionicons, { name: 'checkmark', size: 28, color: selected.length ? accentColor : textSecondary }));
+    return React.createElement(View, { style: [styles.screen, { paddingTop: insets.top }], componentId: 'photo-album-screen' },
+      React.createElement(StatusBar, { backgroundColor: backgroundColor, barStyle: 'light-content' }),
+      React.createElement(Header, { id: 'photo-album', title: selected.length ? selected.length + ' из ' + limit : 'Фотоальбом', back: closeAlbum, action: check }),
+      status === 'loading' ? React.createElement(View, { style: styles.centerEmpty },
+        React.createElement(Text, { style: styles.bodyMuted }, 'Открываем фотоальбом…')) :
+        !photos.length ? React.createElement(View, { style: styles.centerEmpty },
+          React.createElement(Text, { style: styles.title }, 'Фотоальбом пуст'),
+          React.createElement(Text, { style: [styles.bodyMuted, { textAlign: 'center' }] }, 'Разрешите доступ к фотографиям, чтобы отметить несколько снимков.'),
+          React.createElement(PrimaryButton, { id: 'album-retry', label: 'Повторить', onPress: reload })) :
+          React.createElement(ScrollView, { style: styles.flexScroll, contentContainerStyle: { paddingBottom: insets.bottom + 24 } },
+            React.createElement(View, { style: styles.albumGrid },
+              photos.map(function(uri) {
+                var order = selected.indexOf(uri);
+                return React.createElement(TouchableOpacity, { key: uri, activeOpacity: 0.85, style: { width: tile, height: tile, padding: 1, position: 'relative' }, onPress: function() { toggle(uri); } },
+                  React.createElement(Image, { source: { uri: uri }, style: styles.albumImage, resizeMode: 'cover' }),
+                  React.createElement(View, { style: [styles.albumCheck, order >= 0 ? styles.albumCheckOn : null] },
+                    order >= 0 ? React.createElement(Text, { style: styles.albumCheckText }, String(order + 1)) : null));
+              }))
+          ));
+  };
+  // @end:PhotoAlbumScreen
 
   // @section:HistoryScreen @depends:[ThemeContext,shared-components,styles]
   var HistoryScreen = function(props) {
@@ -1040,8 +1140,7 @@ const ComponentFunction = function() {
               React.createElement(View, { style: styles.resultChips },
                 React.createElement(View, { style: styles.tagChip }, React.createElement(Text, { style: styles.tagChipText }, dishDetails(dish).minutes + ' ' + context.translate('min'))),
                 React.createElement(View, { style: styles.tagChip }, React.createElement(Text, { style: styles.tagChipText }, context.translate(dishDetails(dish).kind)))),
-              React.createElement(Text, { testID: 'Test-30', style: styles.bodyMuted, componentId: 'result-price' }, formatPrice(dish.price_rubles) + ' ' + context.translate('estimated total')),
-              React.createElement(Text, { style: styles.cheerLine }, 'You can stop deciding'))),
+              React.createElement(Text, { testID: 'Test-30', style: styles.bodyMuted, componentId: 'result-price' }, formatPrice(dish.price_rubles) + ' ' + context.translate('estimated total')))),
           React.createElement(PrimaryButton, { testID: 'PrimaryButton-4', id: 'result-view-recipe', label: 'View Recipe', onPress: goRecipe }),
           React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-10', style: styles.againButton, onPress: function() { props.navigation.goBack(); }, componentId: 'result-again' },
             React.createElement(Text, { testID: 'Text-31', style: styles.bodyMuted, componentId: 'result-again-label' }, 'No, I want something else'))) :
@@ -1707,6 +1806,11 @@ const ComponentFunction = function() {
     placePhotoImage: { width: 76, height: 76 },
     placePhotoRemove: { position: 'absolute', top: 4, right: 4, width: 22, height: 22, borderRadius: 11, backgroundColor: 'rgba(12,11,10,0.75)', alignItems: 'center', justifyContent: 'center' },
     placePhotoAdd: { width: 76, height: 76, borderRadius: radiusSm, borderWidth: 1, borderColor: borderColor, backgroundColor: surfaceAltColor, alignItems: 'center', justifyContent: 'center', gap: 2 },
+    albumGrid: { flexDirection: 'row', flexWrap: 'wrap' },
+    albumImage: { width: '100%', height: '100%', backgroundColor: surfaceAltColor },
+    albumCheck: { position: 'absolute', top: 8, right: 8, width: 26, height: 26, borderRadius: 13, borderWidth: 2, borderColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(12,11,10,0.35)' },
+    albumCheckOn: { backgroundColor: accentColor, borderColor: accentColor },
+    albumCheckText: { color: '#1A0C08', fontSize: 12, fontWeight: '700' },
     resultImage: { width: '100%', height: 200, borderRadius: radiusMd, backgroundColor: surfaceAltColor },
     againButton: { minHeight: 44, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 12 },
     recipeDetailColumn: { gap: 14, width: '100%' },
@@ -1810,6 +1914,8 @@ const ComponentFunction = function() {
       React.createElement(Stack.Screen, { testID: 'Screen-8', name: 'DishDetail', component: DishDetailScreen }),
       React.createElement(Stack.Screen, { testID: 'Screen-9', name: 'Camera', component: CameraScreen }),
       React.createElement(Stack.Screen, { testID: 'Screen-10', name: 'MenuManager', component: MenuManagerScreen }),
+      React.createElement(Stack.Screen, { testID: 'Screen-12', name: 'PlaceEditor', component: PlaceEditorScreen }),
+      React.createElement(Stack.Screen, { testID: 'Screen-13', name: 'PhotoAlbum', component: PhotoAlbumScreen }),
       React.createElement(Stack.Screen, { testID: 'Screen-11', name: 'History', component: HistoryScreen }));
   };
   // @end:MainNavigator
