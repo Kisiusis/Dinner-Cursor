@@ -282,6 +282,11 @@ const ComponentFunction = function() {
       if (!value) return;
       if (typeof value === 'string') list.push(value);
       else if (value.uri) list.push(value.uri);
+      else if (value.webPath) list.push(value.webPath);
+      else if (value.path) {
+        var path = String(value.path);
+        list.push(path.indexOf('://') >= 0 ? path : 'file://' + path);
+      }
     };
     if (!result) return [];
     if (Array.isArray(result)) result.forEach(push);
@@ -294,6 +299,79 @@ const ComponentFunction = function() {
     var unique = [];
     list.forEach(function(uri) { if (unique.indexOf(uri) < 0) unique.push(uri); });
     return unique.slice(0, 10);
+  };
+  // Системный выбор нескольких фото, как «отметил — Прикрепить».
+  // Свой альбом фото телефона не видит, поэтому сюда не возвращаемся.
+  // Если оболочка умеет только одно фото, остаётся обычная галерея.
+  var pickGallery = function(camera, limit) {
+    var cap = Math.max(1, Math.min(10, limit || 1));
+    var options = {
+      mediaType: 'photo',
+      selectionLimit: cap,
+      quality: 0.8,
+      includeBase64: false,
+      allowsMultipleSelection: true,
+      allowsEditing: false,
+      presentationStyle: 'fullScreen'
+    };
+    var normalize = function(res) {
+      if (!res || res.didCancel || res.cancelled || res.canceled || res.errorCode || res.errorMessage) return [];
+      return collectPhotoUris(res).slice(0, cap);
+    };
+    var asPromise = function(launch) {
+      return new Promise(function(resolve, reject) {
+        var settled = false;
+        var ok = function(res) { if (!settled) { settled = true; resolve(res); } };
+        var bad = function(err) { if (!settled) { settled = true; reject(err); } };
+        try {
+          var pending = launch(options, ok);
+          if (pending && pending.then) pending.then(ok, bad);
+        } catch (err) { bad(err); }
+      });
+    };
+    var launches = [];
+    var addLaunch = function(fn) { if (typeof fn === 'function') launches.push(fn); };
+    if (camera) {
+      if (typeof camera.pickImages === 'function') addLaunch(camera.pickImages.bind(camera));
+      if (typeof camera.pickMultipleImages === 'function') addLaunch(camera.pickMultipleImages.bind(camera));
+      if (typeof camera.launchImageLibrary === 'function') addLaunch(camera.launchImageLibrary.bind(camera));
+    }
+    try {
+      var picker = require('react-native-image-picker');
+      picker = picker && (picker.default || picker);
+      if (picker) addLaunch(picker.launchImageLibrary);
+    } catch (err) {}
+    try {
+      var expoPicker = require('expo-image-picker');
+      expoPicker = expoPicker && (expoPicker.default || expoPicker);
+      if (expoPicker && typeof expoPicker.launchImageLibraryAsync === 'function') {
+        addLaunch(function(opts) {
+          var run = function() {
+            return expoPicker.launchImageLibraryAsync(Object.assign({}, opts, {
+              mediaTypes: expoPicker.MediaTypeOptions && expoPicker.MediaTypeOptions.Images ? expoPicker.MediaTypeOptions.Images : 'images'
+            }));
+          };
+          if (typeof expoPicker.requestMediaLibraryPermissionsAsync === 'function') {
+            return expoPicker.requestMediaLibraryPermissionsAsync().then(run, run);
+          }
+          return run();
+        });
+      }
+    } catch (err) {}
+    try {
+      var mods = require('react-native').NativeModules || {};
+      var nativePicker = mods.ImagePicker || mods.ImagePickerManager || mods.RNImagePicker;
+      if (nativePicker && typeof nativePicker.launchImageLibrary === 'function') addLaunch(nativePicker.launchImageLibrary.bind(nativePicker));
+    } catch (err) {}
+    if (cap > 1 && launches.length) {
+      var started = Date.now();
+      return asPromise(launches[0]).then(normalize).catch(function() {
+        if (Date.now() - started > 400 || !camera || typeof camera.pickImage !== 'function') return [];
+        return camera.pickImage().then(normalize).catch(function() { return []; });
+      });
+    }
+    if (!camera || typeof camera.pickImage !== 'function') return Promise.resolve([]);
+    return camera.pickImage().then(normalize).catch(function() { return []; });
   };
   var capturePhoto = function(camera, extra) {
     var payload = Object.assign({
@@ -831,7 +909,9 @@ const ComponentFunction = function() {
           }).catch(function() {});
         } },
         { text: 'Выбрать из галереи', onPress: function() {
-          camera.pickImage().then(function(res) { collectPhotoUris(res).forEach(appendPlacePhoto); }).catch(function() {});
+          var room = 10 - (photosState[0] || []).length;
+          if (room <= 0) return;
+          pickGallery(camera, room).then(function(uris) { (uris || []).forEach(appendPlacePhoto); }).catch(function() {});
         } },
         { text: 'Отмена', style: 'cancel' }
       ]);
@@ -877,7 +957,7 @@ const ComponentFunction = function() {
         React.createElement(Text, { style: styles.fieldLabel }, 'Прайс, описание'),
         React.createElement(TextInput, { style: [styles.textArea, { minHeight: 96 }], value: descState[0], onChangeText: descState[1], placeholder: 'Прайс, описание...', multiline: true }),
         React.createElement(Text, { style: styles.fieldLabel }, 'Фотографии'),
-        React.createElement(Text, { style: styles.smallMuted }, 'До 10 фото.'),
+        React.createElement(Text, { style: styles.smallMuted }, 'До 10 фото. Отметьте несколько и подтвердите. Отмена ничего не добавит.'),
         React.createElement(View, { style: styles.placePhotoRow },
           photos.map(function(uri, photoIndex) {
             return React.createElement(View, { key: String(photoIndex), style: styles.placePhotoTile },
