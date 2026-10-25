@@ -77,7 +77,7 @@ const ComponentFunction = function() {
     'Try camera again': 'Попробовать снова', 'Add Photo': 'Добавить фото',
     'Take a photo of your dish': 'Сфотографируйте блюдо', 'ADDING A PHOTO TO': 'ДОБАВЛЯЕМ ФОТО К',
     'New dish': 'Новое блюдо', 'A clear overhead photo works best.': 'Лучше всего подойдёт чёткое фото сверху.',
-    'Use Photo': 'Использовать фото', 'Take Photo': 'Сделать фото', 'Dish photo': 'Фото блюда',
+    'Use Photo': 'Использовать', 'Retake': 'Переснять', 'Take Photo': 'Сделать фото', 'Dish photo': 'Фото блюда',
     'Add a photo of the finished dish': 'Добавьте фото готового блюда',
     'Please fill in all the dish details before saving.': 'Заполните все данные о блюде перед сохранением.',
     'Changes couldn’t be saved. Your dish details are still here.': 'Не удалось сохранить изменения.',
@@ -310,6 +310,24 @@ const ComponentFunction = function() {
       return call(camera.pickImage, [options]).then(collectPhotoUris).catch(function() { return call(camera.pickImage, []).then(collectPhotoUris); });
     });
   };
+  var capturePhoto = function(camera, extra) {
+    var payload = Object.assign({
+      locale: 'ru', language: 'ru',
+      retakeLabel: 'Переснять', usePhotoLabel: 'Использовать', cancelLabel: 'Отмена',
+      retakeText: 'Переснять', confirmText: 'Использовать', cancelText: 'Отмена',
+      labels: { retake: 'Переснять', usePhoto: 'Использовать', use: 'Использовать', cancel: 'Отмена' }
+    }, extra || {});
+    if (!camera || !camera.takePhoto) return Promise.reject(new Error('Camera is unavailable.'));
+    var asPromise = function(pending) {
+      return pending && pending.then ? pending : Promise.resolve(pending);
+    };
+    try {
+      return asPromise(camera.takePhoto(payload));
+    } catch (err) {
+      try { return asPromise(camera.takePhoto()); }
+      catch (fallbackErr) { return Promise.reject(fallbackErr); }
+    }
+  };
   var collectDishIssues = function(name, price, ingredients, steps) {
     var issues = {};
     if (!String(name || '').trim()) issues.name = true;
@@ -356,20 +374,67 @@ const ComponentFunction = function() {
   };
   var SwipeRow = function(props) {
     var translate = React.useRef(new Animated.Value(0)).current;
+    var openRef = React.useRef(false);
+    var offsetRef = React.useRef(0);
+    var rowIdRef = React.useRef(props.rowId);
+    var setActiveRef = React.useRef(props.setActiveId);
+    var onDeleteRef = React.useRef(props.onDelete);
+    rowIdRef.current = props.rowId;
+    setActiveRef.current = props.setActiveId;
+    onDeleteRef.current = props.onDelete;
+    var settle = function(open) {
+      openRef.current = open;
+      offsetRef.current = open ? -92 : 0;
+      if (open && setActiveRef.current) setActiveRef.current(rowIdRef.current);
+      Animated.spring(translate, { toValue: open ? -92 : 0, useNativeDriver: false, friction: 8, tension: 90 }).start();
+    };
+    React.useEffect(function() {
+      if (props.activeId !== props.rowId && openRef.current) settle(false);
+    }, [props.activeId, props.rowId]);
+    var claimSwipe = function(_, gesture) {
+      if (Math.abs(gesture.dx) < 16 || Math.abs(gesture.dx) < Math.abs(gesture.dy) * 1.7) return false;
+      if (openRef.current) return true;
+      return gesture.dx < 0;
+    };
     var responder = React.useRef(PanResponder.create({
-      onMoveShouldSetPanResponder: function(_, gesture) { return gesture.dx < -10 && Math.abs(gesture.dx) > Math.abs(gesture.dy); },
-      onMoveShouldSetPanResponderCapture: function(_, gesture) { return gesture.dx < -10 && Math.abs(gesture.dx) > Math.abs(gesture.dy); },
-      onPanResponderMove: function(_, gesture) { translate.setValue(Math.min(0, Math.max(-96, gesture.dx))); },
-      onPanResponderRelease: function(_, gesture) {
-        Animated.spring(translate, { toValue: gesture.dx < -42 || gesture.vx < -0.45 ? -92 : 0, useNativeDriver: true, friction: 8, tension: 80 }).start();
+      onMoveShouldSetPanResponder: claimSwipe,
+      onMoveShouldSetPanResponderCapture: claimSwipe,
+      onPanResponderGrant: function() {
+        if (translate.stopAnimation) translate.stopAnimation();
+        offsetRef.current = openRef.current ? -92 : 0;
+        if (setActiveRef.current) setActiveRef.current(rowIdRef.current);
       },
-      onPanResponderTerminate: function() { Animated.spring(translate, { toValue: 0, useNativeDriver: true, friction: 8 }).start(); }
+      onPanResponderMove: function(_, gesture) {
+        var next = offsetRef.current + gesture.dx;
+        if (next > 0) next = 0;
+        if (next < -104) next = -104;
+        translate.setValue(next);
+      },
+      onPanResponderRelease: function(_, gesture) {
+        var next = offsetRef.current + gesture.dx;
+        var shouldOpen = gesture.vx > 0.45 ? false : gesture.vx < -0.45 ? true : next < -46;
+        settle(shouldOpen);
+      },
+      onPanResponderTerminate: function() { settle(false); }
     })).current;
+    var deleteOpacity = translate.interpolate({ inputRange: [-92, -28, 0], outputRange: [1, 0, 0], extrapolate: 'clamp' });
+    var child = React.Children.only(props.children);
+    var childProps = child.props || {};
+    var front = React.cloneElement(child, {
+      activeOpacity: 1,
+      style: [childProps.style, styles.swipeFront],
+      onPress: function() {
+        if (openRef.current) { settle(false); if (setActiveRef.current) setActiveRef.current(null); return; }
+        if (setActiveRef.current) setActiveRef.current(null);
+        if (childProps.onPress) childProps.onPress();
+      }
+    });
     return React.createElement(View, { style: styles.swipeShell },
-      React.createElement(TouchableOpacity, { style: styles.swipeDelete, onPress: props.onDelete },
-        React.createElement(Ionicons, { name: 'trash-outline', size: 18, color: '#FFFFFF' }),
-        React.createElement(Text, { style: styles.swipeDeleteText }, 'Удалить')),
-      React.createElement(Animated.View, Object.assign({ style: { transform: [{ translateX: translate }] } }, responder.panHandlers), props.children));
+      React.createElement(Animated.View, { style: [styles.swipeDelete, { opacity: deleteOpacity }], pointerEvents: 'box-none' },
+        React.createElement(TouchableOpacity, { style: styles.swipeDeleteHit, activeOpacity: 0.85, onPress: function() { if (onDeleteRef.current) onDeleteRef.current(); } },
+          React.createElement(Ionicons, { name: 'trash-outline', size: 18, color: '#FFFFFF' }),
+          React.createElement(Text, { style: styles.swipeDeleteText }, 'Удалить'))),
+      React.createElement(Animated.View, Object.assign({ style: [styles.swipeFront, { transform: [{ translateX: translate }] }] }, responder.panHandlers), front));
   };
   var TagGroup = function(props) {
     return React.createElement(View, { style: { marginTop: 8 } },
@@ -415,6 +480,12 @@ const ComponentFunction = function() {
     var spinning = spinningState[0], setSpinning = spinningState[1];
     var spinRef = React.useRef(null);
     var rows = query.data;
+    var budgetMax = 5000;
+    (rows || []).forEach(function(dish) {
+      var price = Number(dish && dish.price_rubles);
+      if (price > budgetMax) budgetMax = Math.ceil(price / 1000) * 1000;
+    });
+    var budgetStep = Math.max(50, Math.round(budgetMax / 100));
 
     var eligible = rows.filter(function(dish) {
       var priceOk = Number(dish?.price_rubles || 0) <= budget;
@@ -438,6 +509,9 @@ const ComponentFunction = function() {
     var setHistory = historyStore[1];
 
     React.useEffect(function() { return function() { if (spinRef.current) clearInterval(spinRef.current); }; }, []);
+    React.useEffect(function() {
+      if (budget > budgetMax) setBudget({ amount: budgetMax });
+    }, [budget, budgetMax]);
     
     var countText = context.language === 'RU' ? 'Подходит по бюджету: ' + eligible.length + ' ' +
       (eligible.length % 10 === 1 && eligible.length % 100 !== 11 ? 'блюдо' :
@@ -525,7 +599,7 @@ const ComponentFunction = function() {
               React.createElement(View, { testID: 'View-18', style: styles.budgetTop, componentId: 'home-budget-top' },
                 React.createElement(Text, { testID: 'Text-14', style: styles.secondary, componentId: 'home-budget-label' }, 'Dinner budget'),
                 React.createElement(Text, { testID: 'Text-15', style: styles.title, componentId: 'home-budget-value' }, formatPrice(budget))),
-              React.createElement(Slider, { testID: 'Slider-1', style: { height: 32, width: '100%' }, minimumValue: 300, maximumValue: 5000, step: 50, value: budget,
+              React.createElement(Slider, { testID: 'Slider-1', style: { height: 32, width: '100%' }, minimumValue: 300, maximumValue: budgetMax, step: budgetStep, value: Math.min(Math.max(budget, 300), budgetMax),
                 minimumTrackTintColor: accentColor, maximumTrackTintColor: borderColor, thumbTintColor: textPrimary,
                 onValueChange: function(value) { setBudget({ amount: value }); },
                 componentId: 'home-budget-slider' }),
@@ -606,6 +680,22 @@ const ComponentFunction = function() {
     var pDescState = React.useState('');
     var pPhotosState = React.useState([]);
     var placePhotosNow = pPhotosState[0] || [];
+    var activeSwipeState = React.useState(null);
+    var activeSwipe = activeSwipeState[0], setActiveSwipe = activeSwipeState[1];
+    var galleryOpenState = React.useState(false);
+    var galleryOpen = galleryOpenState[0], setGalleryOpen = galleryOpenState[1];
+    var galleryDraftState = React.useState([]);
+    var galleryDraft = galleryDraftState[0], setGalleryDraft = galleryDraftState[1];
+    var galleryDraftRef = React.useRef([]);
+    var shotState = React.useState('');
+    var shotUri = shotState[0], setShotUri = shotState[1];
+    var closeSwipes = function() { setActiveSwipe(null); };
+    var scrollYRef = React.useRef(0);
+    var onListScroll = function(event) {
+      var y = event.nativeEvent.contentOffset.y;
+      if (Math.abs(y - scrollYRef.current) > 6) closeSwipes();
+      scrollYRef.current = y;
+    };
 
     var openPlaceEditor = function(index) {
       if (index === null || index === undefined) {
@@ -622,24 +712,65 @@ const ComponentFunction = function() {
         pDescState[1](place.desc || '');
         pPhotosState[1](placePhotos(place));
       }
+      setShotUri('');
+      setGalleryOpen(false);
+      galleryDraftRef.current = [];
+      setGalleryDraft([]);
       setPlaceModal(true);
     };
+    var appendPlacePhoto = function(uri) {
+      if (!uri) return;
+      pPhotosState[1](function(prev) {
+        var next = [].concat(prev || []);
+        if (next.length >= 10 || next.indexOf(uri) >= 0) return next;
+        next.push(uri);
+        return next;
+      });
+    };
+    var rememberDraft = function(list) {
+      galleryDraftRef.current = list;
+      setGalleryDraft(list.slice());
+    };
+    var absorbDraft = function(uris) {
+      var next = galleryDraftRef.current.slice();
+      (uris || []).forEach(function(uri) {
+        if (uri && next.length < 10 && next.indexOf(uri) < 0) next.push(uri);
+      });
+      rememberDraft(next);
+      return next;
+    };
+    var cancelGallery = function() {
+      rememberDraft([]);
+      setGalleryOpen(false);
+    };
+    var commitGallery = function() {
+      galleryDraftRef.current.forEach(appendPlacePhoto);
+      cancelGallery();
+    };
+    var pickMoreGallery = function() {
+      if (galleryDraftRef.current.length >= 10) return;
+      pickGalleryPhotos(camera).then(function(uris) {
+        absorbDraft(uris);
+        setGalleryOpen(true);
+      }).catch(function() { setGalleryOpen(galleryDraftRef.current.length > 0); });
+    };
+    var startGallery = function() {
+      rememberDraft([]);
+      pickGalleryPhotos(camera).then(function(uris) {
+        var next = absorbDraft(uris);
+        if (next.length) setGalleryOpen(true);
+      }).catch(function() {});
+    };
+    var shootPlace = function() {
+      capturePhoto(camera, { skipConfirmation: true, skipPreview: true, preview: false }).then(function(res) {
+        var uri = collectPhotoUris(res)[0] || '';
+        if (uri) setShotUri(uri);
+      }).catch(function() {});
+    };
     var addPlacePhoto = function() {
-      var append = function(uri) {
-        if (!uri) return;
-        pPhotosState[1](function(prev) {
-          var next = [].concat(prev || []);
-          if (next.length >= 10 || next.indexOf(uri) >= 0) return next;
-          next.push(uri);
-          return next;
-        });
-      };
-      var appendMany = function(uris) {
-        (uris || []).forEach(append);
-      };
-      Alert.alert('Фото заведения', 'Из галереи можно выбрать сразу до 10 фото.', [
-        { text: 'Сделать фото', onPress: function() { camera.takePhoto().then(function(res) { appendMany(collectPhotoUris(res)); }).catch(function() {}); } },
-        { text: 'Выбрать из галереи', onPress: function() { pickGalleryPhotos(camera).then(appendMany).catch(function() {}); } },
+      Alert.alert('Фото заведения', 'Сначала отметьте фото, затем нажмите «Использовать». Можно добавить до 10.', [
+        { text: 'Сделать фото', onPress: shootPlace },
+        { text: 'Выбрать из галереи', onPress: startGallery },
         { text: 'Отмена', style: 'cancel' }
       ]);
     };
@@ -702,9 +833,9 @@ const ComponentFunction = function() {
         React.createElement(Header, { testID: 'Header-MenuMgr', id: 'menu-mgr', title: 'Recipes & Places', back: function() { props.navigation.goBack(); } }),
 
         React.createElement(View, { style: styles.topSubTabs },
-          React.createElement(TouchableOpacity, { style: [styles.subTabBtn, activeTab === 'recipes' ? styles.subTabBtnActive : null], onPress: function() { setActiveTab('recipes'); setSearch(''); } },
+          React.createElement(TouchableOpacity, { style: [styles.subTabBtn, activeTab === 'recipes' ? styles.subTabBtnActive : null], onPress: function() { setActiveTab('recipes'); setSearch(''); closeSwipes(); } },
             React.createElement(Text, { style: [styles.medium, activeTab === 'recipes' ? { color: onAccentColor } : null] }, 'Рецепты')),
-          React.createElement(TouchableOpacity, { style: [styles.subTabBtn, activeTab === 'places' ? styles.subTabBtnActive : null], onPress: function() { setActiveTab('places'); setSearch(''); } },
+          React.createElement(TouchableOpacity, { style: [styles.subTabBtn, activeTab === 'places' ? styles.subTabBtnActive : null], onPress: function() { setActiveTab('places'); setSearch(''); closeSwipes(); } },
             React.createElement(Text, { style: [styles.medium, activeTab === 'places' ? { color: onAccentColor } : null] }, 'Рестораны / Кафе'))
         ),
 
@@ -714,13 +845,13 @@ const ComponentFunction = function() {
             !(query.data || []).length ? React.createElement(View, { testID: 'View-MenuEmpty', style: styles.centerEmpty, componentId: 'menu-mgr-empty' },
               React.createElement(Text, { testID: 'Text-EmptyTitle', style: styles.title }, 'Your dinner menu starts here'),
               React.createElement(Text, { style: styles.bodyMuted }, 'Add a dish to keep its price and recipe close at hand.')) :
-            React.createElement(ScrollView, { testID: 'ScrollView-MenuMgr', style: styles.flexScroll, contentContainerStyle: { paddingBottom: insets.bottom + SCROLL_EXTRA_PADDING }, componentId: 'menu-mgr-list' },
+            React.createElement(ScrollView, { testID: 'ScrollView-MenuMgr', style: styles.flexScroll, contentContainerStyle: { paddingBottom: insets.bottom + SCROLL_EXTRA_PADDING }, onScroll: onListScroll, onScrollBeginDrag: closeSwipes, scrollEventThrottle: 16, keyboardShouldPersistTaps: 'handled', componentId: 'menu-mgr-list' },
               (query.data || []).filter(function(dish) { return matchesQuery(search, dish && dish.dish_name); }).length ? null :
                 React.createElement(Text, { style: [styles.bodyMuted, { textAlign: 'center', marginTop: 24 }] }, 'Ничего не найдено'),
               (query.data || []).map(function(dish, index) {
                 if (!matchesQuery(search, dish && dish.dish_name)) return null;
                 var details = dishDetails(dish);
-                return React.createElement(SwipeRow, { key: String(dish?.id || index), onDelete: function() { confirmRemoveDish(dish?.id); } },
+                return React.createElement(SwipeRow, { key: String(dish?.id || index), rowId: 'dish-' + String(dish?.id || index), activeId: activeSwipe, setActiveId: setActiveSwipe, onDelete: function() { confirmRemoveDish(dish?.id); } },
                   React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-MenuRow', style: [styles.menuRow, { marginBottom: 0 }], onPress: function() { props.navigation.navigate('DishDetail', { dishId: dish?.id }); }, componentId: 'menu-mgr-item-' + index },
                     React.createElement(DishImage, { testID: 'DishImage-MenuMgr', dish: dish, style: styles.menuImage, componentId: 'menu-mgr-image-' + index }),
                     React.createElement(View, { testID: 'View-MenuInfo', style: styles.menuInfo, componentId: 'menu-mgr-info-' + index },
@@ -734,7 +865,7 @@ const ComponentFunction = function() {
             searchBar(function() { openPlaceEditor(null); }),
             !places.length ? React.createElement(View, { style: styles.centerEmpty },
               React.createElement(Text, { style: styles.title }, 'Нет добавленных кафе или ресторанов')) :
-              React.createElement(ScrollView, { style: styles.flexScroll, contentContainerStyle: { paddingBottom: insets.bottom + SCROLL_EXTRA_PADDING } },
+              React.createElement(ScrollView, { style: styles.flexScroll, contentContainerStyle: { paddingBottom: insets.bottom + SCROLL_EXTRA_PADDING }, onScroll: onListScroll, onScrollBeginDrag: closeSwipes, scrollEventThrottle: 16, keyboardShouldPersistTaps: 'handled' },
                 places.some(function(place) { return matchesQuery(search, place && place.name); }) ? null :
                   React.createElement(Text, { style: [styles.bodyMuted, { textAlign: 'center', marginTop: 24 }] }, 'Ничего не найдено'),
                 places.map(function(place, idx) {
@@ -742,7 +873,7 @@ const ComponentFunction = function() {
                   var photos = placePhotos(place);
                   var photoNote = photos.length > 1 ? photos.length + ' фото' : '';
                   var placeMeta = [place.desc, photoNote].filter(Boolean).join(' · ');
-                  return React.createElement(SwipeRow, { key: idx, onDelete: function() { removePlaceAt(idx); } },
+                  return React.createElement(SwipeRow, { key: 'place-' + idx, rowId: 'place-' + idx, activeId: activeSwipe, setActiveId: setActiveSwipe, onDelete: function() { removePlaceAt(idx); } },
                     React.createElement(TouchableOpacity, { style: [styles.menuRow, { marginBottom: 0 }], onPress: function() { openPlaceEditor(idx); } },
                       photos[0] ? React.createElement(Image, { source: { uri: photos[0] }, style: styles.menuImage, resizeMode: 'cover' }) :
                         React.createElement(View, { style: [styles.menuImage, styles.imageFallback] }, React.createElement(Ionicons, { name: 'restaurant-outline', size: 24, color: textSecondary })),
@@ -757,37 +888,74 @@ const ComponentFunction = function() {
           )
         ),
 
-        React.createElement(Modal, { visible: placeModal, transparent: true, animationType: 'fade', onRequestClose: function() { setPlaceModal(false); } },
+        React.createElement(Modal, { visible: placeModal, transparent: true, animationType: 'fade', onRequestClose: function() {
+          if (shotUri) { setShotUri(''); return; }
+          if (galleryOpen) { cancelGallery(); return; }
+          setPlaceModal(false);
+        } },
           React.createElement(View, { style: styles.modalBackdrop },
             React.createElement(View, { style: styles.placeModalCard },
-              React.createElement(Text, { style: styles.sectionTitle }, editingPlace === null || editingPlace === undefined ? 'Новое заведение' : 'Редактирование заведения'),
-              React.createElement(ScrollView, { style: styles.placeModalScroll, contentContainerStyle: { paddingBottom: 8 } },
-                React.createElement(TextInput, { style: [styles.input, { width: '100%', marginBottom: 8 }], placeholder: 'Название кафе / ресторана', value: pNameState[0], onChangeText: pNameState[1] }),
-                React.createElement(TextInput, { style: [styles.input, { width: '100%', marginBottom: 8 }], placeholder: 'Адрес', value: pAddressState[0], onChangeText: pAddressState[1] }),
-                React.createElement(TextInput, { style: [styles.textArea, { width: '100%', marginBottom: 8, minHeight: 80 }], placeholder: 'Прайс, описание...', value: pDescState[0], onChangeText: pDescState[1], multiline: true }),
-                React.createElement(Text, { style: styles.fieldLabel }, 'Фотографии'),
-                React.createElement(Text, { style: styles.smallMuted }, 'Из галереи можно выбрать сразу до 10 фото.'),
-                React.createElement(View, { style: styles.placePhotoRow },
-                  placePhotosNow.map(function(uri, photoIndex) {
-                    return React.createElement(View, { key: String(photoIndex), style: styles.placePhotoTile },
-                      React.createElement(Image, { source: { uri: uri }, style: styles.placePhotoImage, resizeMode: 'cover' }),
-                      React.createElement(TouchableOpacity, { style: styles.placePhotoRemove, onPress: function() {
-                        pPhotosState[1](function(prev) { return (prev || []).filter(function(_, i) { return i !== photoIndex; }); });
-                      } },
-                        React.createElement(Ionicons, { name: 'close', size: 14, color: textPrimary }))
-                    );
-                  }),
-                  React.createElement(TouchableOpacity, { style: styles.placePhotoAdd, onPress: addPlacePhoto },
-                    React.createElement(Ionicons, { name: 'camera-outline', size: 22, color: accentColor }),
-                    React.createElement(Text, { style: styles.smallMuted }, 'Добавить'))
-                )
-              ),
-              React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginTop: 12, marginBottom: 8 }], onPress: savePlace },
-                React.createElement(Text, { style: styles.primaryButtonText }, 'Сохранить')),
-              editingPlace === null || editingPlace === undefined ? null : React.createElement(TouchableOpacity, { style: [styles.primaryButton, { backgroundColor: '#E25B52', marginBottom: 8 }], onPress: deletePlace },
-                React.createElement(Text, { style: [styles.primaryButtonText, { color: '#FFF' }] }, 'Удалить заведение')),
-              React.createElement(TouchableOpacity, { style: [styles.primaryButton, { backgroundColor: surfaceAltColor, borderWidth: 1, borderColor: borderColor }], onPress: function() { setPlaceModal(false); } },
-                React.createElement(Text, { style: [styles.primaryButtonText, { color: textPrimary }] }, 'Отмена'))
+              shotUri ? React.createElement(View, null,
+                React.createElement(Text, { style: styles.sectionTitle }, 'Фото заведения'),
+                React.createElement(Image, { source: { uri: shotUri }, style: styles.shotPreview, resizeMode: 'cover' }),
+                React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginBottom: 8 }], onPress: function() { appendPlacePhoto(shotUri); setShotUri(''); } },
+                  React.createElement(Text, { style: styles.primaryButtonText }, 'Использовать')),
+                React.createElement(TouchableOpacity, { style: [styles.primaryButton, { backgroundColor: surfaceAltColor, borderWidth: 1, borderColor: borderColor, marginBottom: 8 }], onPress: shootPlace },
+                  React.createElement(Text, { style: [styles.primaryButtonText, { color: textPrimary }] }, 'Переснять')),
+                React.createElement(TouchableOpacity, { style: [styles.primaryButton, { backgroundColor: surfaceAltColor, borderWidth: 1, borderColor: borderColor }], onPress: function() { setShotUri(''); } },
+                  React.createElement(Text, { style: [styles.primaryButtonText, { color: textPrimary }] }, 'Отмена'))
+              ) : galleryOpen ? React.createElement(View, null,
+                React.createElement(Text, { style: styles.sectionTitle }, 'Фото из галереи'),
+                React.createElement(Text, { style: styles.smallMuted }, galleryDraft.length + ' из 10. После каждого снимка галерея закрывается — нажмите «Ещё фото», потом «Использовать».'),
+                React.createElement(ScrollView, { style: styles.placeModalScroll, contentContainerStyle: { paddingBottom: 8 } },
+                  React.createElement(View, { style: styles.placePhotoRow },
+                    galleryDraft.map(function(uri, photoIndex) {
+                      return React.createElement(View, { key: String(photoIndex), style: styles.placePhotoTile },
+                        React.createElement(Image, { source: { uri: uri }, style: styles.placePhotoImage, resizeMode: 'cover' }),
+                        React.createElement(TouchableOpacity, { style: styles.placePhotoRemove, onPress: function() {
+                          rememberDraft(galleryDraftRef.current.filter(function(_, i) { return i !== photoIndex; }));
+                        } },
+                          React.createElement(Ionicons, { name: 'close', size: 14, color: textPrimary }))
+                      );
+                    })
+                  )
+                ),
+                React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginTop: 12, marginBottom: 8, opacity: galleryDraft.length >= 10 ? 0.45 : 1 }], disabled: galleryDraft.length >= 10, onPress: pickMoreGallery },
+                  React.createElement(Text, { style: styles.primaryButtonText }, 'Ещё фото')),
+                React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginBottom: 8, opacity: galleryDraft.length ? 1 : 0.45 }], disabled: !galleryDraft.length, onPress: commitGallery },
+                  React.createElement(Text, { style: styles.primaryButtonText }, 'Использовать')),
+                React.createElement(TouchableOpacity, { style: [styles.primaryButton, { backgroundColor: surfaceAltColor, borderWidth: 1, borderColor: borderColor }], onPress: cancelGallery },
+                  React.createElement(Text, { style: [styles.primaryButtonText, { color: textPrimary }] }, 'Отмена'))
+              ) : React.createElement(View, null,
+                React.createElement(Text, { style: styles.sectionTitle }, editingPlace === null || editingPlace === undefined ? 'Новое заведение' : 'Редактирование заведения'),
+                React.createElement(ScrollView, { style: styles.placeModalScroll, contentContainerStyle: { paddingBottom: 8 } },
+                  React.createElement(TextInput, { style: [styles.input, { width: '100%', marginBottom: 8 }], placeholder: 'Название кафе / ресторана', value: pNameState[0], onChangeText: pNameState[1] }),
+                  React.createElement(TextInput, { style: [styles.input, { width: '100%', marginBottom: 8 }], placeholder: 'Адрес', value: pAddressState[0], onChangeText: pAddressState[1] }),
+                  React.createElement(TextInput, { style: [styles.textArea, { width: '100%', marginBottom: 8, minHeight: 80 }], placeholder: 'Прайс, описание...', value: pDescState[0], onChangeText: pDescState[1], multiline: true }),
+                  React.createElement(Text, { style: styles.fieldLabel }, 'Фотографии'),
+                  React.createElement(Text, { style: styles.smallMuted }, 'До 10 фото. В галерее снимок выбирается по одному, затем «Использовать».'),
+                  React.createElement(View, { style: styles.placePhotoRow },
+                    placePhotosNow.map(function(uri, photoIndex) {
+                      return React.createElement(View, { key: String(photoIndex), style: styles.placePhotoTile },
+                        React.createElement(Image, { source: { uri: uri }, style: styles.placePhotoImage, resizeMode: 'cover' }),
+                        React.createElement(TouchableOpacity, { style: styles.placePhotoRemove, onPress: function() {
+                          pPhotosState[1](function(prev) { return (prev || []).filter(function(_, i) { return i !== photoIndex; }); });
+                        } },
+                          React.createElement(Ionicons, { name: 'close', size: 14, color: textPrimary }))
+                      );
+                    }),
+                    placePhotosNow.length >= 10 ? null : React.createElement(TouchableOpacity, { style: styles.placePhotoAdd, onPress: addPlacePhoto },
+                      React.createElement(Ionicons, { name: 'camera-outline', size: 22, color: accentColor }),
+                      React.createElement(Text, { style: styles.smallMuted }, 'Добавить'))
+                  )
+                ),
+                React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginTop: 12, marginBottom: 8 }], onPress: savePlace },
+                  React.createElement(Text, { style: styles.primaryButtonText }, 'Сохранить')),
+                editingPlace === null || editingPlace === undefined ? null : React.createElement(TouchableOpacity, { style: [styles.primaryButton, { backgroundColor: '#E25B52', marginBottom: 8 }], onPress: deletePlace },
+                  React.createElement(Text, { style: [styles.primaryButtonText, { color: '#FFF' }] }, 'Удалить заведение')),
+                React.createElement(TouchableOpacity, { style: [styles.primaryButton, { backgroundColor: surfaceAltColor, borderWidth: 1, borderColor: borderColor }], onPress: function() { setPlaceModal(false); } },
+                  React.createElement(Text, { style: [styles.primaryButtonText, { color: textPrimary }] }, 'Отмена'))
+              )
             )
           )
         )
@@ -1000,7 +1168,7 @@ const ComponentFunction = function() {
         return;
       }
       Alert.alert(context.translate('Choose a dish photo'), context.translate('Choose photo source'), [
-        { text: context.translate('Take Photo'), onPress: function() { camera.takePhoto().then(function(res) { if (res?.uri) setPhotoUri(res.uri); }).catch(function() {}); } },
+        { text: context.translate('Take Photo'), onPress: function() { capturePhoto(camera).then(function(res) { if (res?.uri) setPhotoUri(res.uri); }).catch(function() {}); } },
         { text: context.translate('Choose from gallery'), onPress: function() { camera.pickImage().then(function(res) { if (res?.uri) setPhotoUri(res.uri); }).catch(function() {}); } },
         { text: context.translate('Cancel'), style: 'cancel' }
       ]);
@@ -1014,7 +1182,7 @@ const ComponentFunction = function() {
       }
       Alert.alert('Фото шага', context.translate('Choose photo source'), [
         { text: context.translate('Take Photo'), onPress: function() {
-          camera.takePhoto().then(function(res) {
+          capturePhoto(camera).then(function(res) {
             if (res?.uri) {
               setSteps(function(prev) {
                 var copy = [].concat(prev);
@@ -1114,7 +1282,7 @@ const ComponentFunction = function() {
             React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginBottom: 8 }], onPress: function() {
               setDishPhotoModal(false);
               Alert.alert('Заменить фото', 'Выберите источник', [
-                { text: 'Сделать фото', onPress: function() { camera.takePhoto().then(function(res) { if (res?.uri) setPhotoUri(res.uri); }).catch(function() {}); } },
+                { text: 'Сделать фото', onPress: function() { capturePhoto(camera).then(function(res) { if (res?.uri) setPhotoUri(res.uri); }).catch(function() {}); } },
                 { text: 'Выбрать из галереи', onPress: function() { camera.pickImage().then(function(res) { if (res?.uri) setPhotoUri(res.uri); }).catch(function() {}); } },
                 { text: 'Отмена', style: 'cancel' }
               ]);
@@ -1165,7 +1333,7 @@ const ComponentFunction = function() {
               setStepPhotoModal({ visible: false, itemIndex: null, photoUri: null });
               Alert.alert('Заменить фото', 'Выберите источник', [
                 { text: 'Сделать фото', onPress: function() {
-                  camera.takePhoto().then(function(res) {
+                  capturePhoto(camera).then(function(res) {
                     if (res?.uri) {
                       setSteps(function(prev) { var copy = [].concat(prev); if (copy[idx]) copy[idx] = Object.assign({}, copy[idx], { photo: res.uri }); return copy; });
                     }
@@ -1261,7 +1429,7 @@ const ComponentFunction = function() {
         return;
       }
       Alert.alert(context.translate('Choose a dish photo'), context.translate('Choose photo source'), [
-        { text: context.translate('Take Photo'), onPress: function() { camera.takePhoto().then(function(res) { if (res?.uri) setPhotoUri(res.uri); }).catch(function() {}); } },
+        { text: context.translate('Take Photo'), onPress: function() { capturePhoto(camera).then(function(res) { if (res?.uri) setPhotoUri(res.uri); }).catch(function() {}); } },
         { text: context.translate('Choose from gallery'), onPress: function() { camera.pickImage().then(function(res) { if (res?.uri) setPhotoUri(res.uri); }).catch(function() {}); } },
         { text: context.translate('Cancel'), style: 'cancel' }
       ]);
@@ -1275,7 +1443,7 @@ const ComponentFunction = function() {
       }
       Alert.alert('Фото шага', context.translate('Choose photo source'), [
         { text: context.translate('Take Photo'), onPress: function() {
-          camera.takePhoto().then(function(res) {
+          capturePhoto(camera).then(function(res) {
             if (res?.uri) {
               setSteps(function(prev) { var copy = [].concat(prev); if (copy[index]) copy[index] = Object.assign({}, copy[index], { photo: res.uri }); return copy; });
             }
@@ -1380,7 +1548,7 @@ const ComponentFunction = function() {
             React.createElement(TouchableOpacity, { style: [styles.primaryButton, { marginBottom: 8 }], onPress: function() {
               setDishPhotoModal(false);
               Alert.alert('Заменить фото', 'Выберите источник', [
-                { text: 'Сделать фото', onPress: function() { camera.takePhoto().then(function(res) { if (res?.uri) setPhotoUri(res.uri); }).catch(function() {}); } },
+                { text: 'Сделать фото', onPress: function() { capturePhoto(camera).then(function(res) { if (res?.uri) setPhotoUri(res.uri); }).catch(function() {}); } },
                 { text: 'Выбрать из галереи', onPress: function() { camera.pickImage().then(function(res) { if (res?.uri) setPhotoUri(res.uri); }).catch(function() {}); } },
                 { text: 'Отмена', style: 'cancel' }
               ]);
@@ -1431,7 +1599,7 @@ const ComponentFunction = function() {
               setStepPhotoModal({ visible: false, itemIndex: null, photoUri: null });
               Alert.alert('Заменить фото', 'Выберите источник', [
                 { text: 'Сделать фото', onPress: function() {
-                  camera.takePhoto().then(function(res) {
+                  capturePhoto(camera).then(function(res) {
                     if (res?.uri) {
                       setSteps(function(prev) { var copy = [].concat(prev); if (copy[idx]) copy[idx] = Object.assign({}, copy[idx], { photo: res.uri }); return copy; });
                     }
@@ -1491,7 +1659,7 @@ const ComponentFunction = function() {
         }
       }
     };
-    var take = function() { setError(''); camera.takePhoto().then(finish, function(err) { setError(err?.message || 'Camera access is unavailable.'); }); };
+    var take = function() { setError(''); capturePhoto(camera).then(finish, function(err) { setError(err?.message || 'Camera access is unavailable.'); }); };
     var pick = function() { setError(''); camera.pickImage().then(finish, function(err) { setError(err?.message || 'Gallery access is unavailable.'); }); };
     React.useEffect(function() { if (source === 'camera') take(); else if (source === 'gallery') pick(); }, [source]);
     var errorText = error || camera.error;
@@ -1505,7 +1673,10 @@ const ComponentFunction = function() {
         React.createElement(View, { testID: 'View-46', style: styles.cameraBody, componentId: 'camera-body' },
           camera.photo?.uri ? React.createElement(Image, { testID: 'Image-4', source: { uri: camera.photo.uri }, style: styles.cameraStagePhoto, resizeMode: 'cover', componentId: 'camera-captured-photo' }) :
             React.createElement(View, { testID: 'View-47', style: styles.cameraStage, componentId: 'camera-stage' }, React.createElement(Ionicons, { testID: 'Ionicons-10', name: 'camera-outline', size: 32, color: accentColor }), React.createElement(Text, { testID: 'Test-59', style: styles.bodyMuted }, 'Take a photo of your dish')),
-          camera.photo?.uri ? React.createElement(PrimaryButton, { testID: 'PrimaryButton-9', id: 'camera-use-photo', label: 'Use Photo', onPress: function() { finish({ uri: camera.photo.uri }); } }) :
+          camera.photo?.uri ? React.createElement(View, { style: styles.cameraChoices },
+            React.createElement(PrimaryButton, { testID: 'PrimaryButton-9', id: 'camera-use-photo', label: 'Use Photo', onPress: function() { finish({ uri: camera.photo.uri }); } }),
+            React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-Retake', style: styles.cameraGalleryButton, onPress: take, componentId: 'camera-retake' },
+              React.createElement(Text, { style: styles.link }, 'Retake'))) :
             React.createElement(View, { testID: 'View-48', style: styles.cameraChoices, componentId: 'camera-choices' },
               React.createElement(PrimaryButton, { testID: 'PrimaryButton-10', id: 'camera-take-photo', label: 'Take Photo', onPress: take }),
               React.createElement(TouchableOpacity, { testID: 'TouchableOpacity-14', style: styles.cameraGalleryButton, onPress: pick, componentId: 'camera-gallery-retry' }, React.createElement(Text, { testID: 'Text-60', style: styles.link }, 'Choose from gallery')))));
@@ -1625,9 +1796,12 @@ const ComponentFunction = function() {
     searchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12, marginBottom: 12 },
     searchInput: { flex: 1, minHeight: 48, borderRadius: radiusPill, backgroundColor: cardColor, borderWidth: 1, borderColor: borderColor, paddingHorizontal: 16, color: textPrimary, fontSize: 15 },
     searchAdd: { width: 48, height: 48, borderRadius: 24, backgroundColor: accentColor, alignItems: 'center', justifyContent: 'center' },
-    swipeShell: { marginBottom: 10, borderRadius: radiusMd, overflow: 'hidden', backgroundColor: '#E25B52' },
-    swipeDelete: { position: 'absolute', right: 0, top: 0, bottom: 0, width: 92, alignItems: 'center', justifyContent: 'center', gap: 4 },
+    swipeShell: { marginBottom: 10, borderRadius: radiusMd, overflow: 'hidden', backgroundColor: cardColor },
+    swipeFront: { backgroundColor: cardColor, width: '100%' },
+    swipeDelete: { position: 'absolute', right: 0, top: 0, bottom: 0, width: 92, backgroundColor: '#E25B52' },
+    swipeDeleteHit: { flex: 1, width: '100%', alignItems: 'center', justifyContent: 'center', gap: 4 },
     swipeDeleteText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
+    shotPreview: { width: '100%', height: 240, borderRadius: radiusMd, backgroundColor: surfaceAltColor, marginTop: 8, marginBottom: 14 },
     sheetBackdrop: { flex: 1, backgroundColor: 'rgba(8,7,6,0.72)', justifyContent: 'flex-end' },
     filterSheet: { backgroundColor: cardColor, borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 20, paddingTop: 10, paddingBottom: 28, borderTopWidth: 1, borderColor: borderColor },
     sheetHandle: { width: 42, height: 4, borderRadius: 2, backgroundColor: borderColor, alignSelf: 'center', marginBottom: 14 },
