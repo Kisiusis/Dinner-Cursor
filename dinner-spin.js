@@ -659,11 +659,13 @@ const ComponentFunction = function() {
     };
     return fromBase64().catch(fromFetch).catch(function() { return runReaders(0); });
   };
-  var archiveFileType = function() {
-    return Platform.OS === 'ios' ? 'public.item' : '*/*';
+  var archiveTypes = function() {
+    if (Platform.OS === 'ios') {
+      return ['application/zip', 'application/x-zip-compressed', 'public.zip-archive', 'com.pkware.zip-archive'];
+    }
+    return ['*/*'];
   };
   var callDocumentPick = function(pick, owner) {
-    var fileType = archiveFileType();
     if (typeof pick !== 'function') return Promise.reject(new Error('no-picker'));
     var invoke = function(type) {
       var options = { type: type, copyTo: 'cachesDirectory', copyToCacheDirectory: true, multiple: false, allowMultiSelection: false, mode: 'import' };
@@ -675,9 +677,10 @@ const ComponentFunction = function() {
       }
       return Promise.resolve().then(function() { return pick.call(owner || null, options); });
     };
-    return invoke([fileType]).catch(function(err) {
+    var types = archiveTypes();
+    return invoke(types).catch(function(err) {
       if (isPickerCancel(err)) return Promise.reject(err);
-      return invoke(fileType);
+      return invoke(types[0]);
     });
   };
   var pickRecipeArchive = function() {
