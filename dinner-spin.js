@@ -636,20 +636,6 @@ const ComponentFunction = function() {
         return response.arrayBuffer();
       }).then(function(buffer) { return new Uint8Array(buffer); });
     };
-    var fromXhr = function() {
-      return new Promise(function(resolve, reject) {
-        if (!uri || typeof XMLHttpRequest === 'undefined') { reject(new Error('no-xhr')); return; }
-        var xhr = new XMLHttpRequest();
-        xhr.open('GET', uri);
-        xhr.responseType = 'arraybuffer';
-        xhr.onload = function() {
-          if (!xhr.response) { reject(new Error('xhr')); return; }
-          resolve(new Uint8Array(xhr.response));
-        };
-        xhr.onerror = function() { reject(new Error('xhr')); };
-        xhr.send();
-      });
-    };
     var readers = [];
     try {
       var FS = require('expo-file-system');
@@ -671,7 +657,7 @@ const ComponentFunction = function() {
       if (index >= readers.length) return Promise.reject(new Error('read'));
       return readers[index]().catch(function() { return runReaders(index + 1); });
     };
-    return fromBase64().catch(fromFetch).catch(fromXhr).catch(function() { return runReaders(0); });
+    return fromBase64().catch(fromFetch).catch(function() { return runReaders(0); });
   };
   var archiveFileType = function() {
     return Platform.OS === 'ios' ? 'public.item' : '*/*';
