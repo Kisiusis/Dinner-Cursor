@@ -636,6 +636,20 @@ const ComponentFunction = function() {
         return response.arrayBuffer();
       }).then(function(buffer) { return new Uint8Array(buffer); });
     };
+    var fromXhr = function() {
+      return new Promise(function(resolve, reject) {
+        if (!uri || typeof XMLHttpRequest === 'undefined') { reject(new Error('no-xhr')); return; }
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', uri);
+        xhr.responseType = 'arraybuffer';
+        xhr.onload = function() {
+          if (!xhr.response) { reject(new Error('xhr')); return; }
+          resolve(new Uint8Array(xhr.response));
+        };
+        xhr.onerror = function() { reject(new Error('xhr')); };
+        xhr.send();
+      });
+    };
     var readers = [];
     try {
       var FS = require('expo-file-system');
@@ -657,64 +671,115 @@ const ComponentFunction = function() {
       if (index >= readers.length) return Promise.reject(new Error('read'));
       return readers[index]().catch(function() { return runReaders(index + 1); });
     };
-    return fromBase64().catch(fromFetch).catch(function() { return runReaders(0); });
+    return fromBase64().catch(fromFetch).catch(fromXhr).catch(function() { return runReaders(0); });
+  };
+  var archiveFileType = function() {
+    return Platform.OS === 'ios' ? 'public.item' : '*/*';
+  };
+  var callDocumentPick = function(pick, owner) {
+    var fileType = archiveFileType();
+    if (typeof pick !== 'function') return Promise.reject(new Error('no-picker'));
+    var invoke = function(type) {
+      var options = { type: type, copyTo: 'cachesDirectory', copyToCacheDirectory: true, multiple: false, allowMultiSelection: false, mode: 'import' };
+      if (pick.length >= 2) {
+        return new Promise(function(resolve, reject) {
+          try { pick.call(owner || null, options, function(err, res) { if (err) reject(err); else resolve(res); }); }
+          catch (err) { reject(err); }
+        });
+      }
+      return Promise.resolve().then(function() { return pick.call(owner || null, options); });
+    };
+    return invoke([fileType]).catch(function(err) {
+      if (isPickerCancel(err)) return Promise.reject(err);
+      return invoke(fileType);
+    });
   };
   var pickRecipeArchive = function() {
-    if (Platform.OS === 'web' && typeof document !== 'undefined') {
+    if (Platform.OS === 'web' && typeof document !== 'undefined' && document.body) {
       return new Promise(function(resolve, reject) {
         var input = document.createElement('input');
         input.type = 'file';
-        input.accept = '.zip,application/zip,application/octet-stream';
+        input.accept = '.zip,application/zip,application/octet-stream,application/x-zip-compressed,*/*';
+        input.style.position = 'fixed';
+        input.style.left = '0';
+        input.style.top = '0';
+        input.style.opacity = '0.01';
+        input.style.width = '48px';
+        input.style.height = '48px';
+        input.style.zIndex = '99999';
+        var finish = function(err, bytes) {
+          if (input.parentNode) input.parentNode.removeChild(input);
+          if (err) reject(err);
+          else resolve(bytes);
+        };
         input.onchange = function() {
           var file = input.files && input.files[0];
-          if (!file) { reject(new Error('cancel')); return; }
+          if (!file) { finish(new Error('cancel')); return; }
           var reader = new FileReader();
-          reader.onload = function() { resolve(new Uint8Array(reader.result)); };
-          reader.onerror = function() { reject(new Error('read')); };
+          reader.onload = function() { finish(null, new Uint8Array(reader.result)); };
+          reader.onerror = function() { finish(new Error('read')); };
           reader.readAsArrayBuffer(file);
         };
+        document.body.appendChild(input);
         input.click();
       });
     }
     var attempts = [];
     var takeAsset = function(result) {
-      if (!result || result.canceled || result.type === 'cancel') return Promise.resolve(null);
+      if (!result) return Promise.reject(new Error('empty-pick'));
+      if (result.canceled || result.cancelled || result.didCancel || result.type === 'cancel') return Promise.resolve(null);
       var asset = result.assets && result.assets[0] ? result.assets[0] : result;
-      if (!asset || asset.canceled || asset.type === 'cancel') return Promise.resolve(null);
       if (Array.isArray(asset)) asset = asset[0];
-      if (!asset) return Promise.resolve(null);
+      if (!asset || asset.canceled || asset.didCancel || asset.type === 'cancel') return Promise.resolve(null);
       return readPickedBytes(asset);
+    };
+    var pushPick = function(pick, owner) {
+      if (typeof pick !== 'function') return;
+      attempts.push(function() { return callDocumentPick(pick, owner).then(takeAsset); });
     };
     try {
       var expoPicker = require('expo-document-picker');
-      var getDocument = expoPicker && (expoPicker.getDocumentAsync || (expoPicker.default && expoPicker.default.getDocumentAsync));
-      if (getDocument) attempts.push(function() {
-        return getDocument({ type: ['application/zip', 'application/octet-stream', '*/*'], copyToCacheDirectory: true, multiple: false }).then(takeAsset);
-      });
+      var expoApi = expoPicker && (expoPicker.default || expoPicker);
+      pushPick(expoApi && (expoApi.getDocumentAsync || expoApi.pick), expoApi);
     } catch (expoErr) {}
     try {
       var legacyPicker = require('react-native-document-picker');
-      var legacyPick = legacyPicker && (legacyPicker.pick || (legacyPicker.default && legacyPicker.default.pick));
-      var zipType = legacyPicker && legacyPicker.types && legacyPicker.types.zip ? legacyPicker.types.zip : 'application/zip';
-      if (legacyPick) attempts.push(function() {
-        return legacyPick({ type: [zipType], copyTo: 'cachesDirectory' }).then(takeAsset);
-      });
+      var legacyApi = legacyPicker && (legacyPicker.default || legacyPicker);
+      pushPick(legacyApi && (legacyApi.pickSingle || legacyApi.pick), legacyApi);
     } catch (legacyErr) {}
     try {
       var docsPicker = require('@react-native-documents/picker');
-      var docsPick = docsPicker && (docsPicker.pick || (docsPicker.default && docsPicker.default.pick));
-      if (docsPick) attempts.push(function() {
-        return docsPick({ type: ['application/zip', 'application/octet-stream'] }).then(takeAsset);
-      });
+      var docsApi = docsPicker && (docsPicker.default || docsPicker);
+      pushPick(docsApi && (docsApi.pick || docsApi.pickSingle), docsApi);
     } catch (docsErr) {}
     try {
-      var native = require('react-native').NativeModules || {};
-      ['RNDocumentPicker', 'RNCDocumentPicker', 'DocumentPicker'].forEach(function(name) {
-        var mod = native[name];
-        var pick = mod && (mod.pickSingle || mod.pick);
-        if (!pick) return;
-        attempts.push(function() { return Promise.resolve(pick.call(mod, { type: ['application/zip'] })).then(takeAsset); });
+      var hooks = require('platform-hooks');
+      Object.keys(hooks || {}).forEach(function(key) {
+        if (!/file|document/i.test(key) || typeof hooks[key] !== 'function' || /^use[A-Z]/.test(key)) return;
+        pushPick(hooks[key], hooks);
       });
+    } catch (hooksErr) {}
+    try {
+      var reactNative = require('react-native');
+      var seen = {};
+      var consider = function(name, mod) {
+        if (!mod || seen[name]) return;
+        seen[name] = true;
+        pushPick(mod.pickSingle || mod.pick || mod.pickDocument || mod.openPicker || mod.getDocumentAsync, mod);
+      };
+      var native = reactNative.NativeModules || {};
+      Object.keys(native).forEach(function(name) {
+        if (/document|filepicker|filePicker|RNFile|chooser/i.test(name)) consider(name, native[name]);
+      });
+      ['RNDocumentPicker', 'RNCDocumentPicker', 'DocumentPicker', 'ExponentDocumentPicker', 'ExpoDocumentPicker'].forEach(function(name) {
+        consider(name, native[name]);
+      });
+      var turbo = reactNative.TurboModuleRegistry;
+      if (turbo && turbo.get) {
+        ['RNDocumentPicker', 'RNCDocumentPicker', 'DocumentPicker'].forEach(function(name) {
+          try { consider('turbo-' + name, turbo.get(name)); } catch (turboErr) {}
+        });
+      }
     } catch (nativeErr) {}
     if (!attempts.length) return Promise.reject(new Error('no-picker'));
     var run = function(index) {
@@ -1410,12 +1475,12 @@ const ComponentFunction = function() {
     var insertDish = useMutation('dishes', 'insert');
     var recipes = query.data || [];
     var visible = recipes.filter(function(dish) { return matchesQuery(search, dish && dish.dish_name); });
-    var importArchive = function() {
-      if (importing) return;
-      setSourceOpen(false);
-      setImporting(true);
-      pickRecipeArchive().then(function(bytes) {
+    var pickLock = React.useRef(false);
+    var wantPick = React.useRef(false);
+    var consumeArchive = function(pending) {
+      return pending.then(function(bytes) {
         if (!bytes || !bytes.length) return;
+        setImporting(true);
         var parsed = [];
         try { parsed = recipesFromZipBytes(bytes); }
         catch (parseErr) {
@@ -1468,7 +1533,29 @@ const ComponentFunction = function() {
           return;
         }
         Alert.alert('Файл', 'Не удалось прочитать архив. Нужен zip: в каждой папке photo.jpg и recipe.json.');
-      }).then(function() { setImporting(false); });
+      }).then(function() {
+        pickLock.current = false;
+        setImporting(false);
+      });
+    };
+    var openArchivePicker = function() {
+      if (!wantPick.current || pickLock.current) return;
+      wantPick.current = false;
+      pickLock.current = true;
+      consumeArchive(pickRecipeArchive());
+    };
+    var importArchive = function() {
+      if (importing || pickLock.current) return;
+      if (Platform.OS === 'web' && typeof document !== 'undefined') {
+        pickLock.current = true;
+        var pending = pickRecipeArchive();
+        setSourceOpen(false);
+        consumeArchive(pending);
+        return;
+      }
+      wantPick.current = true;
+      setSourceOpen(false);
+      setTimeout(openArchivePicker, 600);
     };
     return React.createElement(View, { testID: 'View-20', style: [styles.screen, { paddingTop: insets.top }], componentId: 'recipes-screen' },
       React.createElement(StatusBar, { testID: 'StatusBar-Recipes', backgroundColor: backgroundColor, barStyle: 'light-content' }),
@@ -1494,7 +1581,7 @@ const ComponentFunction = function() {
                   React.createElement(Text, { testID: 'Text-20', style: styles.smallMuted, componentId: 'recipes-meta-' + index }, formatPrice(dish?.price_rubles) + ' · ' + cookMinutes(dish) + ' ' + context.translate('min')),
                   React.createElement(Text, { testID: 'Text-21', style: styles.link, componentId: 'recipes-action-' + index }, 'View recipe')));
             }))),
-      React.createElement(Modal, { visible: sourceOpen, transparent: true, animationType: 'fade', onRequestClose: function() { setSourceOpen(false); } },
+      React.createElement(Modal, { visible: sourceOpen, transparent: true, animationType: 'fade', onRequestClose: function() { setSourceOpen(false); }, onDismiss: openArchivePicker },
         React.createElement(View, { style: styles.modalBackdrop },
           React.createElement(View, { style: styles.unitModalContent },
             React.createElement(Text, { style: [styles.sectionTitle, { textAlign: 'center' }] }, 'Add a recipe from'),
