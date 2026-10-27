@@ -106,7 +106,7 @@ const ComponentFunction = function() {
     'Add a recipe from': 'Откуда добавить',
     'Online': 'Онлайн',
     'ZIP file': 'Файл ZIP',
-    'Online is the catalog. A file is a zip with photos.': 'Онлайн — каталог с переводом. Файл — zip с фотографиями.',
+    'Online is the catalog. A file is a zip with photos.': 'Онлайн — каталог с переводом. Файл — один zip: блюда и заведения, с фото.',
     'Cook time': 'Время готовки',
     'Reading the archive…': 'Читаем архив…',
     'Search recipes': 'Найти рецепт',
@@ -497,7 +497,10 @@ const ComponentFunction = function() {
   };
   var imageDataUri = function(name, bytes) {
     var lower = String(name || '').toLowerCase();
-    var mime = lower.indexOf('.png') >= 0 ? 'image/png' : lower.indexOf('.webp') >= 0 ? 'image/webp' : 'image/jpeg';
+    var mime = 'image/jpeg';
+    if (lower.indexOf('.png') >= 0 || (bytes && bytes[0] === 0x89 && bytes[1] === 0x50)) mime = 'image/png';
+    else if (lower.indexOf('.webp') >= 0 || (bytes && bytes[0] === 0x52 && bytes[1] === 0x49)) mime = 'image/webp';
+    else if (lower.indexOf('.gif') >= 0 || (bytes && bytes[0] === 0x47 && bytes[1] === 0x49)) mime = 'image/gif';
     return 'data:' + mime + ';base64,' + bytesToBase64(bytes);
   };
   var normalizeUnit = function(unit) {
@@ -563,15 +566,72 @@ const ComponentFunction = function() {
       groups[folder].push(entry);
     });
     var dishes = [];
+    var places = [];
+    var mapPlaceCategory = function(value) {
+      var raw = String(value || '').trim().toLowerCase();
+      if (raw.indexOf('каф') >= 0 || raw === 'cafe') return 'Cafe';
+      if (raw.indexOf('рестор') >= 0 || raw === 'restaurant') return 'Restaurant';
+      return raw ? 'Restaurant' : '';
+    };
+    var fileBase = function(entry) { return entry.name.split('/').pop().toLowerCase(); };
+    var samePhoto = function(entry, listedName) {
+      var want = String(listedName || '').split('/').pop().toLowerCase();
+      var stem = want.replace(/\.(jpe?g|png|webp|gif)$/, '');
+      var base = fileBase(entry);
+      var baseStem = base.replace(/\.(jpe?g|png|webp|gif)$/, '');
+      return base === want || baseStem === stem;
+    };
     Object.keys(groups).sort().forEach(function(folder) {
       var files = groups[folder];
       var recipeFile = null;
+      var placeFile = null;
       var photoFile = null;
       files.forEach(function(entry) {
-        var base = entry.name.split('/').pop().toLowerCase();
+        var base = fileBase(entry);
         if (base === 'recipe.json') recipeFile = entry;
+        if (base === 'place.json') placeFile = entry;
         if (!photoFile && /^photo\.(jpe?g|png|webp)$/.test(base)) photoFile = entry;
       });
+      if (placeFile) {
+        var placeJson;
+        try { placeJson = JSON.parse(bytesToText(unzipEntry(bytes, placeFile))); }
+        catch (placeErr) { placeJson = null; }
+        var placeName = placeJson && String(placeJson.name || '').trim();
+        if (placeName) {
+          var usedPhotos = {};
+          var photoUris = [];
+          var takePhoto = function(entry) {
+            if (!entry || usedPhotos[entry.name] || photoUris.length >= 10) return;
+            usedPhotos[entry.name] = true;
+            try { photoUris.push(imageDataUri(entry.name, unzipEntry(bytes, entry))); }
+            catch (photoErr) {}
+          };
+          (placeJson.photos || []).forEach(function(listed) {
+            files.forEach(function(entry) { if (samePhoto(entry, listed)) takePhoto(entry); });
+          });
+          files.slice().sort(function(a, b) { return fileBase(a).localeCompare(fileBase(b)); }).forEach(function(entry) {
+            if (/^photo([_-]?\d+)?\.(jpe?g|png|webp|gif)$/.test(fileBase(entry))) takePhoto(entry);
+          });
+          var descParts = [];
+          var about = String(placeJson.price_description || placeJson.desc || placeJson.description || '').trim();
+          if (about) descParts.push(about);
+          if (placeJson.rating) {
+            var ratingLine = String(placeJson.rating);
+            if (placeJson.rating_source) ratingLine += ' · ' + placeJson.rating_source;
+            if (placeJson.reviews_count) ratingLine += ' · ' + placeJson.reviews_count + ' отзывов';
+            descParts.push(ratingLine);
+          }
+          var walk = Number(placeJson.approx_walk_min_to_vysotsky);
+          if (walk > 0) descParts.push('Пешком около ' + Math.round(walk) + ' мин');
+          places.push({
+            name: placeName,
+            address: String(placeJson.address || '').trim(),
+            desc: descParts.join('\n'),
+            category: mapPlaceCategory(placeJson.category),
+            photos: photoUris
+          });
+        }
+      }
       if (!recipeFile) return;
       var recipe;
       try { recipe = JSON.parse(bytesToText(unzipEntry(bytes, recipeFile))); }
@@ -614,7 +674,7 @@ const ComponentFunction = function() {
         cook_minutes: minutes
       });
     });
-    return dishes;
+    return { dishes: dishes, places: places };
   };
   var isPickerCancel = function(err) {
     var msg = String(err && (err.code || err.message) || err || '');
@@ -1462,6 +1522,8 @@ const ComponentFunction = function() {
     var importingState = React.useState(false);
     var importing = importingState[0], setImporting = importingState[1];
     var insertDish = useMutation('dishes', 'insert');
+    var placesStore = useStorage('dinner-places', []);
+    var setPlaces = placesStore[1];
     var recipes = query.data || [];
     var visible = recipes.filter(function(dish) { return matchesQuery(search, dish && dish.dish_name); });
     var pickLock = React.useRef(false);
@@ -1470,14 +1532,16 @@ const ComponentFunction = function() {
       return pending.then(function(bytes) {
         if (!bytes || !bytes.length) return;
         setImporting(true);
-        var parsed = [];
-        try { parsed = recipesFromZipBytes(bytes); }
+        var pack = { dishes: [], places: [] };
+        try { pack = recipesFromZipBytes(bytes) || pack; }
         catch (parseErr) {
-          Alert.alert('Файл', 'Не удалось прочитать архив. Нужен zip: в каждой папке photo.jpg и recipe.json.');
+          Alert.alert('Файл', 'Не удалось прочитать архив. В папках нужны recipe.json или place.json и фото.');
           return;
         }
-        if (!parsed.length) {
-          Alert.alert('Файл', 'В архиве нет рецептов. Нужны папки с recipe.json и photo.jpg.');
+        var parsed = pack.dishes || [];
+        var parsedPlaces = pack.places || [];
+        if (!parsed.length && !parsedPlaces.length) {
+          Alert.alert('Файл', 'В архиве нет блюд и заведений. Нужны папки с recipe.json или place.json и фото.');
           return;
         }
         var known = {};
@@ -1500,20 +1564,42 @@ const ComponentFunction = function() {
             cook_minutes: recipe.cook_minutes
           });
         });
+        var knownPlaces = {};
+        (placesStore[0] || []).forEach(function(place) {
+          knownPlaces[String(place && place.name || '').trim().toLowerCase()] = true;
+        });
+        var placeQueue = [];
+        parsedPlaces.forEach(function(place) {
+          var key = String(place.name || '').trim().toLowerCase();
+          if (!key || knownPlaces[key]) { skipped += 1; return; }
+          knownPlaces[key] = true;
+          placeQueue.push(place);
+        });
+        if (placeQueue.length) {
+          setPlaces(function(prev) {
+            var list = prev || [];
+            var names = {};
+            list.forEach(function(place) { names[String(place && place.name || '').trim().toLowerCase()] = true; });
+            return list.concat(placeQueue.filter(function(place) { return !names[String(place.name || '').trim().toLowerCase()]; }));
+          });
+        }
         var chain = Promise.resolve();
         queue.forEach(function(dish) {
           chain = chain.then(function() { return insertDish.mutate(dish); });
         });
         return chain.then(function() {
-          if (!queue.length) {
-            Alert.alert('Рецепты', 'Эти рецепты уже есть в меню.');
+          if (!queue.length && !placeQueue.length) {
+            Alert.alert('Импорт', 'Эти блюда и заведения уже есть в меню.');
             return;
           }
-          var note = 'Добавлено ' + queue.length + ' ' + ruNoun(queue.length, 'рецепт', 'рецепта', 'рецептов') + '.';
+          var parts = [];
+          if (queue.length) parts.push(queue.length + ' ' + ruNoun(queue.length, 'рецепт', 'рецепта', 'рецептов'));
+          if (placeQueue.length) parts.push(placeQueue.length + ' ' + ruNoun(placeQueue.length, 'заведение', 'заведения', 'заведений'));
+          var note = 'Добавлено ' + parts.join(' и ') + '.';
           if (skipped) note += ' Уже были: ' + skipped + '.';
-          Alert.alert('Рецепты', note);
+          Alert.alert('Импорт', note);
         }, function() {
-          Alert.alert('Рецепты', 'Архив прочитан, но сохранить получилось не всё. Проверьте меню.');
+          Alert.alert('Импорт', 'Архив прочитан, но сохранить получилось не всё. Проверьте меню.');
         });
       }).catch(function(err) {
         if (isPickerCancel(err)) return;
@@ -1521,7 +1607,7 @@ const ComponentFunction = function() {
           Alert.alert('Файл', 'На этом телефоне не открылся выбор файла. Добавьте рецепт через «Онлайн».');
           return;
         }
-        Alert.alert('Файл', 'Не удалось прочитать архив. Нужен zip: в каждой папке photo.jpg и recipe.json.');
+        Alert.alert('Файл', 'Не удалось прочитать архив. В папках нужны recipe.json или place.json и фото.');
       }).then(function() {
         pickLock.current = false;
         setImporting(false);
